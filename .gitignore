@@ -1,0 +1,29 @@
+# Sensitive data
+config.py
+*.env
+
+# Data files
+data/*.csv
+data/*.xlsx
+
+# Results
+results/
+*.png
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS specific
+.DS_Store
+Thumbs.db

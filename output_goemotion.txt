@@ -1,0 +1,110 @@
+======================================================================
+GoEmotions Multi-Label Emotion Classification: Comprehensive Evaluation Suite
+======================================================================
+Using GoEmotions dataset: data/goemotions_1.csv
+
+Evaluation Options:
+This will evaluate 9 different prompting strategies on the GoEmotions dataset.
+
+Metrics to be calculated:
+- Exact Match Accuracy: All emotions must match exactly
+- Cohen's Kappa (κ): Agreement beyond chance
+- Krippendorff's Alpha (α): Reliability measure
+- Intraclass Correlation (ICC): Score correlation
+- Hamming Loss: Average per-label error (multi-label specific)
+- Subset Accuracy: Jaccard similarity of emotion sets
+
+Enter number of comments to evaluate (recommended: 50-100 for testing, or press Enter for all): 
+Available prompting techniques:
+1. Zero-shot
+2. Chain of Thought
+3. Few-shot
+4. Active Prompting
+5. Auto-CoT
+6. Contrastive CoT
+7. Rephrase and Respond
+8. Self-Consistency
+9. Take a Step Back
+10. All techniques
+
+Enter technique numbers (comma-separated) or 10 for all: 
+Starting comprehensive GoEmotions evaluation...
+This may take some time depending on the number of comments and techniques selected.
+Note: GoEmotions uses multi-label classification (comments can have multiple emotions).
+
+GoEmotions evaluation results will be saved in: results/goemotions_evaluation_all_techniques_20250704_011237
+
+============================================================
+Running Zero-shot evaluation...
+============================================================
+Loading data from: data/goemotions_1.csv
+Loaded 70000 rows with 37 columns
+Processing GoEmotions dataset format.
+
+Processed 70000 comments with emotion annotations
+
+Emotion annotation statistics:
+  admiration     : 5647/70000 (8.1%)
+  amusement      : 3081/70000 (4.4%)
+  anger          : 2589/70000 (3.7%)
+  annoyance      : 4443/70000 (6.3%)
+  approval       : 5928/70000 (8.5%)
+  caring         : 1988/70000 (2.8%)
+  confusion      : 2471/70000 (3.5%)
+  curiosity      : 3267/70000 (4.7%)
+  desire         : 1248/70000 (1.8%)
+  disappointment : 2771/70000 (4.0%)
+  disapproval    : 3774/70000 (5.4%)
+  disgust        : 1704/70000 (2.4%)
+  embarrassment  : 817/70000 (1.2%)
+  excitement     : 1900/70000 (2.7%)
+  fear           : 1048/70000 (1.5%)
+  gratitude      : 3863/70000 (5.5%)
+  grief          : 227/70000 (0.3%)
+  joy            : 2607/70000 (3.7%)
+  love           : 2745/70000 (3.9%)
+  nervousness    : 598/70000 (0.9%)
+  optimism       : 2887/70000 (4.1%)
+  pride          : 452/70000 (0.6%)
+  realization    : 2867/70000 (4.1%)
+  relief         : 452/70000 (0.6%)
+  remorse        : 849/70000 (1.2%)
+  sadness        : 2193/70000 (3.1%)
+  surprise       : 1806/70000 (2.6%)
+  neutral        : 18423/70000 (26.3%)
+Filtered to 68871 comments with at least 1 emotions
+
+Evaluating on 25 comments
+
+Processing comment 1/25
+Comment: That game hurt....
+Human: ['sadness']
+Model: ['anger', 'annoyance', 'disappointment', 'disapproval', 'nervousness', 'sadness']
+Match: False
+
+Processing comment 2/25
+Comment: You do right, if you don't care then fuck 'em!...
+Human: ['neutral']
+Model: ['anger', 'annoyance', 'approval']
+Match: False
+
+Processing comment 3/25
+Comment: Man I love reddit....
+Human: ['love']
+Model: ['approval', 'excitement', 'joy']
+Match: False
+
+Processing comment 4/25
+Comment: [NAME] was nowhere near them, he was by the Falcon. ...
+Human: ['neutral']
+Model: ['neutral']
+Match: True
+
+Processing comment 5/25
+Comment: Right? Considering it’s such an important document, I should know the damned thing backwards and for...
+Human: ['gratitude']
+Model: ['admiration', 'annoyance', 'approval', 'caring', 'curiosity', 'excitement', 'gratitude', 'joy', 'nervousness', 'pride', 'relief']
+Match: False
+
+Processing comment 6/25
+Comment: He isn't as big, but he's still quite popular. I've heard the same thing about his content. Never wa...
