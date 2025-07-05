@@ -361,6 +361,30 @@ class GoEmotionsRubric:
             'surprise', 'neutral'
         ]
 
+    def get_contrastive_examples(self, emotion: str) -> tuple[list[str], list[str]]:
+            """
+            Return a tuple (positive_examples, negative_examples) for a given emotion.
+            Positive examples show that emotion; negatives show other emotions.
+            """
+            defs = self.get_category_definitions()
+            if emotion not in defs:
+                raise KeyError(f"Unknown emotion: {emotion}")
+
+            # 1) Take up to N positive examples for this emotion
+            pos = defs[emotion]["examples"][:3]
+
+            # 2) Collect one example each from a few other emotions as negatives
+            neg = []
+            for emo, data in defs.items():
+                if emo == emotion:
+                    continue
+                # grab one example from each until we have, say, 3 negatives
+                if data["examples"]:
+                    neg.append(data["examples"][0])
+                if len(neg) >= 3:
+                    break
+
+            return pos, neg
 # For easy import - same pattern as SIGHT
 EMOTION_CATEGORIES = GoEmotionsRubric.get_all_emotions()
 EMOTION_DEFINITIONS = GoEmotionsRubric.get_category_definitions()
