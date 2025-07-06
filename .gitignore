@@ -1,6 +1,7 @@
 # Sensitive data
 config.py
-*.env
+.env
+*.key
 
 # Data files
 data/*.csv
