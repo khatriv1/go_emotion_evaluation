@@ -2,77 +2,44 @@
 
 import time
 import re
+import ast
 from typing import List, Optional
-from utils.emotion_rubric import GoEmotionsRubric
 
-def get_cot_prediction(text: str,
-                       subreddit: str,
-                       author: str, 
-                       client,
-                       emotion: str) -> Optional[bool]:
-    """
-    Get Chain of Thought prediction for a single emotion.
-    Ensures a final dedicated line with 'true' or 'false' for reliable parsing.
-    """
-    rubric = GoEmotionsRubric()
-    descriptions = rubric.get_prompt_descriptions()
-    if emotion not in descriptions:
-        raise ValueError(f"Unknown emotion: {emotion}")
-
-    # Build prompt with an explicit final-answer line
-    prompt = f"""Consider the Reddit comment below:
-
-Subreddit: {subreddit}
-Author: {author}
-Comment: {text}
-
-Emotion to check: {emotion}
-Definition: {descriptions[emotion]}
-
-Step 1: What is the main content/sentiment of this comment?
-Step 2: Does it express {emotion} per the definition?
-Step 3: What words or phrases support your decision?
-
-Finally, on its own line **write exactly** `Final Answer: true`  
-or `Final Answer: false`, and nothing else."""
-
+def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
+    """Parse emotion response from LLM output"""
+    response_text = response_text.strip()
+    
+    # Try to parse as Python list first
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Think step by step and conclude with a single Final Answer line."},
-                {"role": "user",   "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=200
-        )
-        result = response.choices[0].message.content.strip().lower()
-
-        # Look for the last occurrence of 'true' or 'false'
-        for line in reversed(result.splitlines()):
-            m = re.search(r"\b(final answer:\s*)(true|false)\b", line)
-            if m:
-                return (m.group(2) == "true")
-
-        # Fallback: any standalone true/false token
-        m2 = re.findall(r"\b(true|false)\b", result)
-        if m2:
-            return (m2[-1] == "true")
-
-        print(f"Could not extract true/false from CoT response for {emotion}: {result}")
-        return None
-
-    except Exception as e:
-        print(f"Error getting CoT prediction for {emotion}: {e}")
-        return None
-
+        # Look for list pattern like ['emotion1', 'emotion2']
+        list_match = re.search(r'\[([^\]]+)\]', response_text)
+        if list_match:
+            list_str = '[' + list_match.group(1) + ']'
+            parsed = ast.literal_eval(list_str)
+            if isinstance(parsed, list):
+                emotions = [str(item).strip().strip("'\"") for item in parsed]
+                # Filter to valid emotions only
+                return [e for e in emotions if e in valid_emotions]
+    except:
+        pass
+    
+    # Try to find emotions mentioned in the text
+    found_emotions = []
+    response_lower = response_text.lower()
+    
+    for emotion in valid_emotions:
+        if emotion.lower() in response_lower:
+            found_emotions.append(emotion)
+    
+    return found_emotions
 
 def get_cot_prediction_all_emotions(text: str,
                                     subreddit: str,
                                     author: str,
                                     client) -> List[str]:
     """
-    Get CoT predictions for all emotions.
+    Get CoT predictions using multi-label approach.
+    FIXED: Single comprehensive prompt with step-by-step reasoning
     """
     emotions = [
         'admiration', 'amusement', 'anger', 'annoyance', 'approval',
@@ -82,10 +49,51 @@ def get_cot_prediction_all_emotions(text: str,
         'pride', 'realization', 'relief', 'remorse', 'sadness',
         'surprise', 'neutral'
     ]
-    assigned = []
-    for emo in emotions:
-        pred = get_cot_prediction(text, subreddit, author, client, emo)
-        if pred:
-            assigned.append(emo)
-        time.sleep(0.5)
-    return assigned
+
+    # Build prompt with chain of thought reasoning
+    prompt = f"""Classify this Reddit comment into the most appropriate emotions.
+
+Available emotions: {', '.join(emotions)}
+
+Comment: "{text}"
+Subreddit: {subreddit}
+Author: {author}
+
+Think step by step:
+1. What is the main emotional tone of this comment?
+2. What specific words or phrases indicate emotions?
+3. What emotions are clearly expressed vs. implied?
+4. Be selective - most comments have 1-2 emotions maximum
+
+Instructions:
+- Select only PRIMARY emotions clearly expressed
+- Don't over-predict - be conservative
+- If no clear emotion, select 'neutral'
+
+Final answer as Python list: ['emotion1', 'emotion2']
+
+Response:"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing emotions in text. Think step by step and be selective. Only choose emotions that are clearly expressed."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=200
+        )
+
+        result = response.choices[0].message.content.strip()
+        predicted_emotions = parse_emotion_response(result, emotions)
+        
+        # Fallback to neutral if no emotions found
+        if not predicted_emotions:
+            predicted_emotions = ['neutral']
+            
+        return predicted_emotions
+
+    except Exception as e:
+        print(f"Error getting CoT prediction: {e}")
+        return ['neutral']

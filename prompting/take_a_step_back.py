@@ -2,34 +2,51 @@
 
 """
 Take a Step Back prompting for GoEmotions emotion classification.
-First derives high-level principles, then applies them to classification.
+FIXED: Multi-label approach with high-level principles
 """
 
 import time
-from typing import List, Optional, Dict
-from utils.emotion_rubric import GoEmotionsRubric
+import re
+import ast
+from typing import List, Optional
 
-def derive_classification_principles(emotion: str, client) -> Optional[str]:
+def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
+    """Parse emotion response from LLM output"""
+    response_text = response_text.strip()
+    
+    # Try to parse as Python list first
+    try:
+        # Look for list pattern like ['emotion1', 'emotion2']
+        list_match = re.search(r'\[([^\]]+)\]', response_text)
+        if list_match:
+            list_str = '[' + list_match.group(1) + ']'
+            parsed = ast.literal_eval(list_str)
+            if isinstance(parsed, list):
+                emotions = [str(item).strip().strip("'\"") for item in parsed]
+                # Filter to valid emotions only
+                return [e for e in emotions if e in valid_emotions]
+    except:
+        pass
+    
+    # Try to find emotions mentioned in the text
+    found_emotions = []
+    response_lower = response_text.lower()
+    
+    for emotion in valid_emotions:
+        if emotion.lower() in response_lower:
+            found_emotions.append(emotion)
+    
+    return found_emotions
+
+def derive_classification_principles(client) -> str:
     """
-    Derive high-level principles for classifying an emotion.
-    
-    Args:
-        emotion: The emotion to derive principles for
-        client: OpenAI client
-    
-    Returns:
-        String containing derived principles or None if failed
+    Derive high-level principles for emotion classification.
     """
-    rubric = GoEmotionsRubric()
-    prompt_descriptions = rubric.get_prompt_descriptions()
-    
-    prompt = f"""Take a step back and think about the fundamental principles for identifying the '{emotion}' emotion in text.
+    prompt = f"""Take a step back and think about the fundamental principles for identifying emotions in Reddit comments.
 
-Emotion definition: {prompt_descriptions[emotion]}
+What are the key characteristics, patterns, and principles that would help identify emotions in text? 
 
-What are the key characteristics, patterns, and principles that would help identify if a Reddit comment expresses this emotion? 
-
-List 3-5 high-level principles:"""
+List 5-7 high-level principles for emotion classification:"""
 
     try:
         response = client.chat.completions.create(
@@ -45,98 +62,16 @@ List 3-5 high-level principles:"""
         return response.choices[0].message.content.strip()
         
     except Exception as e:
-        print(f"Error deriving principles for {emotion}: {str(e)}")
-        return None
-
-def get_take_step_back_prediction(text: str,
-                                subreddit: str,
-                                author: str, 
-                                client,
-                                emotion: str) -> Optional[bool]:
-    """
-    Get Take a Step Back prediction for a single emotion.
-    
-    Args:
-        text: The Reddit comment text
-        subreddit: Name of the subreddit
-        author: Comment author
-        client: OpenAI client
-        emotion: Emotion to classify for
-    
-    Returns:
-        Boolean indicating if comment expresses this emotion, None if failed
-    """
-    rubric = GoEmotionsRubric()
-    prompt_descriptions = rubric.get_prompt_descriptions()
-    
-    if emotion not in prompt_descriptions:
-        raise ValueError(f"Unknown emotion: {emotion}")
-    
-    # Step 1: Derive high-level principles
-    principles = derive_classification_principles(emotion, client)
-    if principles is None:
-        print(f"Failed to derive principles for {emotion}")
-        principles = "Consider the emotion definition carefully."
-    
-    # Step 2: Apply principles to classify
-    prompt = f"""You are classifying emotions in Reddit comments.
-
-Emotion: {emotion}
-Definition: {prompt_descriptions[emotion]}
-
-High-level principles for this emotion:
-{principles}
-
-Now apply these principles to classify this specific comment:
-
-Subreddit: {subreddit}
-Author: {author}
-Comment: {text}
-
-Based on the principles above, does this comment express the '{emotion}' emotion?
-Answer 'true' or 'false'."""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Apply the given principles to make accurate classifications. Respond only with 'true' or 'false'."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=10
-        )
-        
-        result = response.choices[0].message.content.strip().lower()
-        
-        if result == "true":
-            return True
-        elif result == "false":
-            return False
-        else:
-            print(f"Unexpected response for {emotion}: {result}")
-            return None
-            
-    except Exception as e:
-        print(f"Error getting take-step-back prediction for {emotion}: {str(e)}")
-        return None
-
+        print(f"Error deriving principles: {str(e)}")
+        return "Consider the explicit emotional words, context, and tone of the comment."
 
 def get_take_step_back_prediction_all_emotions(text: str,
                                              subreddit: str,
                                              author: str,
                                              client) -> List[str]:
     """
-    Get Take a Step Back predictions for all GoEmotions categories.
-    
-    Args:
-        text: The Reddit comment text
-        subreddit: Name of the subreddit
-        author: Comment author
-        client: OpenAI client
-    
-    Returns:
-        List of emotions assigned to the comment
+    Get Take a Step Back predictions using multi-label approach.
+    FIXED: Single comprehensive prompt with high-level principles
     """
     emotions = [
         'admiration', 'amusement', 'anger', 'annoyance', 'approval',
@@ -147,63 +82,56 @@ def get_take_step_back_prediction_all_emotions(text: str,
         'surprise', 'neutral'
     ]
     
-    assigned_emotions = []
+    # Step 1: Derive high-level principles (cached for efficiency)
+    print("Deriving classification principles...")
+    principles = derive_classification_principles(client)
     
-    # Pre-derive principles for all emotions to be efficient
-    principles_cache = {}
-    print("Deriving classification principles for all emotions...")
-    for emotion in emotions:
-        principles = derive_classification_principles(emotion, client)
-        if principles:
-            principles_cache[emotion] = principles
-        else:
-            # Fallback principles if derivation fails
-            principles_cache[emotion] = f"Consider if the comment fits the definition of {emotion}."
-        time.sleep(0.3)  # Rate limiting for principle derivation
-    
-    # Now classify using cached principles
-    for emotion in emotions:
-        rubric = GoEmotionsRubric()
-        prompt_descriptions = rubric.get_prompt_descriptions()
-        
-        prompt = f"""You are classifying emotions in Reddit comments.
+    # Step 2: Apply principles to classify
+    prompt = f"""Classify this Reddit comment using high-level emotion classification principles.
 
-Emotion: {emotion}
-Definition: {prompt_descriptions[emotion]}
+High-level principles for emotion classification:
+{principles}
 
-High-level principles for this emotion:
-{principles_cache[emotion]}
+Available emotions: {', '.join(emotions)}
 
-Now apply these principles to classify this specific comment:
-
+Comment: "{text}"
 Subreddit: {subreddit}
 Author: {author}
-Comment: {text}
 
-Based on the principles above, does this comment express the '{emotion}' emotion?
-Answer 'true' or 'false'."""
+Apply the principles above to classify this comment:
+1. What high-level patterns do you see?
+2. What emotions are clearly expressed based on the principles?
+3. Be selective - most comments have 1-2 emotions maximum
 
-        try:
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo-0125",
-                messages=[
-                    {"role": "system", "content": "You are an expert at analyzing emotions in text. Apply the given principles to make accurate classifications. Respond only with 'true' or 'false'."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0,
-                max_tokens=10
-            )
-            
-            result = response.choices[0].message.content.strip().lower()
-            
-            if result == "true":
-                assigned_emotions.append(emotion)
-                
-        except Exception as e:
-            print(f"Error getting take-step-back prediction for {emotion}: {str(e)}")
-            continue
+Instructions:
+- Select only PRIMARY emotions clearly expressed
+- Don't over-predict - follow the principles
+- If no clear emotion, select 'neutral'
+
+Response as Python list: ['emotion1', 'emotion2']
+
+Response:"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing emotions in text. Apply the given principles to make accurate classifications. Be selective."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=150
+        )
         
-        # Rate limiting
-        time.sleep(0.5)
-    
-    return assigned_emotions
+        result = response.choices[0].message.content.strip()
+        predicted_emotions = parse_emotion_response(result, emotions)
+        
+        # Fallback to neutral if no emotions found
+        if not predicted_emotions:
+            predicted_emotions = ['neutral']
+            
+        return predicted_emotions
+        
+    except Exception as e:
+        print(f"Error getting take-step-back prediction: {str(e)}")
+        return ['neutral']

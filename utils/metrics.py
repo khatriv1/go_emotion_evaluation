@@ -1,302 +1,762 @@
-# goemotions_evaluation/utils/metrics.py
-
 """
-Evaluation metrics for GoEmotions multi-label emotion classification.
-Using the 4 specified metrics: Accuracy, Cohen's Kappa, Krippendorff's Alpha, ICC
+Comprehensive metrics for multi-label emotion classification evaluation
+Fixed to include missing GoEmotionsMetrics class and functions
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import cohen_kappa_score, accuracy_score
-from scipy import stats
-import krippendorff
-from typing import Dict, List, Tuple
+import pandas as pd
+from typing import Dict, List, Tuple, Optional, Any
+from sklearn.metrics import (
+    cohen_kappa_score, accuracy_score, precision_recall_fscore_support,
+    hamming_loss, jaccard_score, classification_report
+)
+from scipy.stats import pearsonr
+import logging
 
-def calculate_agreement_metrics(human_labels: Dict[str, List[str]], 
-                               model_labels: Dict[str, List[str]], 
-                               categories: List[str]) -> Dict[str, float]:
+# Try to import krippendorff, but don't fail if it's not available
+try:
+    import krippendorff
+    HAS_KRIPPENDORFF = True
+except ImportError:
+    HAS_KRIPPENDORFF = False
+    logging.warning("krippendorff package not found. Install with: pip install krippendorff")
+
+import config
+
+class GoEmotionsMetrics:
+    """Comprehensive metrics for GoEmotions multi-label classification"""
+    
+    def __init__(self, emotions_list: List[str]):
+        self.emotions_list = emotions_list
+        self.emotion_groups = config.EMOTION_GROUPS
+        self.logger = logging.getLogger(__name__)
+    
+    def calculate_exact_match_accuracy(self, y_true: List[List[str]], y_pred: List[List[str]]) -> float:
+        """Calculate exact match accuracy (all emotions must match exactly)"""
+        matches = 0
+        total = len(y_true)
+        
+        for true_emotions, pred_emotions in zip(y_true, y_pred):
+            if set(true_emotions) == set(pred_emotions):
+                matches += 1
+        
+        return (matches / total) * 100 if total > 0 else 0.0
+    
+    def calculate_hamming_loss(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+        """Calculate Hamming loss for multi-label classification"""
+        return hamming_loss(y_true_binary, y_pred_binary)
+    
+    def calculate_subset_accuracy(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+        """Calculate subset accuracy (Jaccard similarity)"""
+        # Convert to lists of sets for Jaccard calculation
+        y_true_sets = [set(np.where(row)[0]) for row in y_true_binary]
+        y_pred_sets = [set(np.where(row)[0]) for row in y_pred_binary]
+        
+        jaccard_scores = []
+        for true_set, pred_set in zip(y_true_sets, y_pred_sets):
+            if len(true_set) == 0 and len(pred_set) == 0:
+                jaccard_scores.append(1.0)
+            elif len(true_set) == 0 or len(pred_set) == 0:
+                jaccard_scores.append(0.0)
+            else:
+                intersection = len(true_set.intersection(pred_set))
+                union = len(true_set.union(pred_set))
+                jaccard_scores.append(intersection / union if union > 0 else 0.0)
+        
+        return np.mean(jaccard_scores)
+    
+    def emotions_to_binary(self, emotions_lists: List[List[str]]) -> np.ndarray:
+        """Convert emotion lists to binary matrix"""
+        binary_matrix = np.zeros((len(emotions_lists), len(self.emotions_list)))
+        
+        for i, emotions in enumerate(emotions_lists):
+            for emotion in emotions:
+                if emotion in self.emotions_list:
+                    j = self.emotions_list.index(emotion)
+                    binary_matrix[i, j] = 1
+        
+        return binary_matrix
+    
+    def calculate_cohens_kappa(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+        """Calculate Cohen's Kappa for multi-label classification"""
+        # Flatten the arrays for overall kappa calculation
+        y_true_flat = y_true_binary.flatten()
+        y_pred_flat = y_pred_binary.flatten()
+        
+        try:
+            return cohen_kappa_score(y_true_flat, y_pred_flat)
+        except:
+            return 0.0
+    
+    def calculate_krippendorffs_alpha(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+        """Calculate Krippendorff's Alpha for reliability"""
+        if not HAS_KRIPPENDORFF:
+            return 0.0
+            
+        try:
+            # Reshape for krippendorff format (2 x n_observations)
+            data = np.vstack([y_true_binary.flatten(), y_pred_binary.flatten()])
+            alpha = krippendorff.alpha(data, level_of_measurement='nominal')
+            return alpha if not np.isnan(alpha) else 0.0
+        except:
+            return 0.0
+    
+    def calculate_icc(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+        """Calculate Intraclass Correlation Coefficient"""
+        try:
+            # Calculate correlation between true and predicted emotion patterns
+            correlations = []
+            for i in range(len(self.emotions_list)):
+                true_col = y_true_binary[:, i]
+                pred_col = y_pred_binary[:, i]
+                
+                if np.var(true_col) > 0 and np.var(pred_col) > 0:
+                    corr, _ = pearsonr(true_col, pred_col)
+                    if not np.isnan(corr):
+                        correlations.append(corr)
+            
+            return np.mean(correlations) if correlations else 0.0
+        except:
+            return 0.0
+    
+    def calculate_per_emotion_metrics(self, y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> Dict:
+        """Calculate metrics for each emotion individually"""
+        per_emotion_metrics = {}
+        
+        for i, emotion in enumerate(self.emotions_list):
+            true_col = y_true_binary[:, i]
+            pred_col = y_pred_binary[:, i]
+            
+            # Basic metrics
+            accuracy = accuracy_score(true_col, pred_col)
+            
+            # Support (number of true instances)
+            support = int(np.sum(true_col))
+            
+            # Cohen's Kappa for this emotion
+            try:
+                kappa = cohen_kappa_score(true_col, pred_col)
+            except:
+                kappa = 0.0
+            
+            # Krippendorff's Alpha for this emotion
+            try:
+                if HAS_KRIPPENDORFF and (np.var(true_col) > 0 or np.var(pred_col) > 0):
+                    data = np.vstack([true_col, pred_col])
+                    alpha = krippendorff.alpha(data, level_of_measurement='nominal')
+                    alpha = alpha if not np.isnan(alpha) else 0.0
+                else:
+                    alpha = 0.0
+            except:
+                alpha = 0.0
+            
+            # Correlation
+            try:
+                if np.var(true_col) > 0 and np.var(pred_col) > 0:
+                    corr, _ = pearsonr(true_col, pred_col)
+                    corr = corr if not np.isnan(corr) else 0.0
+                else:
+                    corr = 0.0
+            except:
+                corr = 0.0
+            
+            # Precision, Recall, F1
+            try:
+                precision, recall, f1, _ = precision_recall_fscore_support(
+                    true_col, pred_col, average='binary', zero_division=0
+                )
+            except:
+                precision = recall = f1 = 0.0
+            
+            per_emotion_metrics[emotion] = {
+                'accuracy': accuracy,
+                'kappa': kappa,
+                'alpha': alpha,
+                'correlation': corr,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'support': support
+            }
+        
+        return per_emotion_metrics
+    
+    def calculate_group_metrics(self, per_emotion_metrics: Dict) -> Dict:
+        """Calculate metrics by emotion groups"""
+        group_metrics = {}
+        
+        for group_name, group_emotions in self.emotion_groups.items():
+            group_kappas = []
+            group_accuracies = []
+            group_f1s = []
+            
+            for emotion in group_emotions:
+                if emotion in per_emotion_metrics:
+                    metrics = per_emotion_metrics[emotion]
+                    group_kappas.append(metrics['kappa'])
+                    group_accuracies.append(metrics['accuracy'])
+                    group_f1s.append(metrics['f1'])
+            
+            if group_kappas:
+                group_metrics[group_name] = {
+                    'avg_kappa': np.mean(group_kappas),
+                    'avg_accuracy': np.mean(group_accuracies),
+                    'avg_f1': np.mean(group_f1s),
+                    'num_emotions': len(group_kappas)
+                }
+        
+        return group_metrics
+    
+    def comprehensive_evaluation(self, y_true: List[List[str]], y_pred: List[List[str]]) -> Dict:
+        """
+        Perform comprehensive evaluation of multi-label emotion classification
+        
+        Args:
+            y_true: List of true emotion lists
+            y_pred: List of predicted emotion lists
+            
+        Returns:
+            Dictionary containing all evaluation metrics
+        """
+        # Convert to binary matrices
+        y_true_binary = self.emotions_to_binary(y_true)
+        y_pred_binary = self.emotions_to_binary(y_pred)
+        
+        # Calculate overall metrics
+        exact_match_accuracy = self.calculate_exact_match_accuracy(y_true, y_pred)
+        cohens_kappa = self.calculate_cohens_kappa(y_true_binary, y_pred_binary)
+        krippendorffs_alpha = self.calculate_krippendorffs_alpha(y_true_binary, y_pred_binary)
+        icc = self.calculate_icc(y_true_binary, y_pred_binary)
+        hamming_loss_score = self.calculate_hamming_loss(y_true_binary, y_pred_binary)
+        subset_accuracy = self.calculate_subset_accuracy(y_true_binary, y_pred_binary)
+        
+        # Calculate per-emotion metrics
+        per_emotion_metrics = self.calculate_per_emotion_metrics(y_true_binary, y_pred_binary)
+        
+        # Calculate group metrics
+        group_metrics = self.calculate_group_metrics(per_emotion_metrics)
+        
+        # Compile results
+        results = {
+            'exact_match_accuracy': exact_match_accuracy,
+            'cohens_kappa': cohens_kappa,
+            'krippendorffs_alpha': krippendorffs_alpha,
+            'icc': icc,
+            'hamming_loss': hamming_loss_score,
+            'subset_accuracy': subset_accuracy,
+            'per_emotion_metrics': per_emotion_metrics,
+            'group_metrics': group_metrics,
+            'num_samples': len(y_true)
+        }
+        
+        return results
+    
+    def print_results(self, results: Dict, technique_name: str = ""):
+        """Print formatted results"""
+        if technique_name:
+            print(f"\n=== {technique_name} Results ===")
+        
+        print("Overall Multi-Label Metrics:")
+        print(f"  Exact Match Accuracy: {results['exact_match_accuracy']:.1f}%")
+        print(f"  Cohen's Kappa (κ): {results['cohens_kappa']:.3f}")
+        print(f"  Krippendorff's Alpha (α): {results['krippendorffs_alpha']:.3f}")
+        print(f"  Intraclass Correlation (ICC): {results['icc']:.3f}")
+        print()
+        
+        # Print per-emotion results sorted by support
+        print("Per-Emotion Results (sorted by support):")
+        per_emotion = results['per_emotion_metrics']
+        sorted_emotions = sorted(per_emotion.items(), 
+                               key=lambda x: x[1]['support'], reverse=True)
+        
+        for emotion, metrics in sorted_emotions:
+            print(f"  {emotion:<15}: Acc={metrics['accuracy']*100:.1f}%, "
+                  f"κ={metrics['kappa']:.3f}, α={metrics['alpha']:.3f}, "
+                  f"Corr={metrics['correlation']:.3f}, Supp={metrics['support']}")
+        
+        print()
+        print("Multi-Label Performance Interpretation:")
+        exact_match = results['exact_match_accuracy']
+        if exact_match >= 70:
+            interpretation = "Excellent - Most emotion sets predicted correctly"
+        elif exact_match >= 50:
+            interpretation = "Good - Many emotion sets predicted correctly"
+        elif exact_match >= 30:
+            interpretation = "Fair - Some emotion sets predicted correctly"
+        else:
+            interpretation = "Poor - Few emotion sets predicted correctly"
+        
+        print(f"  Exact Match ({exact_match:.1f}%): {interpretation}")
+        
+        kappa = results['cohens_kappa']
+        if kappa >= 0.8:
+            agreement = "Almost Perfect Agreement"
+        elif kappa >= 0.6:
+            agreement = "Substantial Agreement"
+        elif kappa >= 0.4:
+            agreement = "Moderate Agreement"
+        elif kappa >= 0.2:
+            agreement = "Fair Agreement"
+        elif kappa >= 0.0:
+            agreement = "Slight Agreement"
+        else:
+            agreement = "Poor Agreement"
+        
+        print(f"  Overall Agreement (κ={kappa:.3f}): {agreement}")
+        
+        # Print group performance
+        if 'group_metrics' in results:
+            print()
+            print("Performance by Emotion Groups:")
+            for group, metrics in results['group_metrics'].items():
+                print(f"  {group:<10}: Average κ = {metrics['avg_kappa']:.3f}")
+
+
+def create_detailed_results_dataframe(predictions: List[Dict], emotions_list: List[str]) -> pd.DataFrame:
+    """Create detailed results dataframe for analysis"""
+    detailed_data = []
+    
+    for pred in predictions:
+        row = {
+            'comment_id': pred.get('id', ''),
+            'comment_text': pred.get('text', ''),
+            'human_emotions': str(pred.get('human_emotions', [])),
+            'predicted_emotions': str(pred.get('predicted_emotions', [])),
+            'exact_match': pred.get('exact_match', False),
+            'num_human_emotions': len(pred.get('human_emotions', [])),
+            'num_predicted_emotions': len(pred.get('predicted_emotions', [])),
+        }
+        
+        # Add binary columns for each emotion
+        human_emotions = set(pred.get('human_emotions', []))
+        predicted_emotions = set(pred.get('predicted_emotions', []))
+        
+        for emotion in emotions_list:
+            row[f'human_{emotion}'] = 1 if emotion in human_emotions else 0
+            row[f'pred_{emotion}'] = 1 if emotion in predicted_emotions else 0
+            row[f'match_{emotion}'] = 1 if (emotion in human_emotions) == (emotion in predicted_emotions) else 0
+        
+        detailed_data.append(row)
+    
+    return pd.DataFrame(detailed_data)
+
+
+def comprehensive_report(all_results: Dict, eval_info: Dict, output_path: str):
+    """Generate comprehensive evaluation report"""
+    
+    with open(output_path, 'w') as f:
+        f.write("GoEmotions Multi-Label Emotion Classification: Comprehensive Evaluation Report\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Dataset information
+        f.write("DATASET INFORMATION:\n")
+        f.write(f"Total comments evaluated: {eval_info.get('total_comments', 'N/A')}\n")
+        f.write(f"Total emotions: {len(eval_info.get('emotions_list', []))}\n")
+        f.write(f"Emotion categories: {len(config.EMOTION_GROUPS)}\n\n")
+        
+        # Emotion list
+        f.write("EMOTIONS EVALUATED:\n")
+        emotions_list = eval_info.get('emotions_list', [])
+        for i, emotion in enumerate(emotions_list, 1):
+            f.write(f"{i:2d}. {emotion}\n")
+        f.write("\n")
+        
+        # Emotion groups
+        f.write("EMOTION GROUPS:\n")
+        for group_name, group_emotions in config.EMOTION_GROUPS.items():
+            f.write(f"{group_name.upper()}: {', '.join(group_emotions)}\n")
+        f.write("\n")
+        
+        if not all_results:
+            f.write("No successful evaluations to report.\n")
+            return
+        
+        # Overall comparison
+        f.write("TECHNIQUE COMPARISON:\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"{'Technique':<20} {'Exact Match':<12} {'Cohen κ':<10} {'Kripp α':<10} {'ICC':<8} {'Hamming':<10}\n")
+        f.write("-" * 80 + "\n")
+        
+        for technique_name, results in all_results.items():
+            f.write(f"{technique_name:<20} "
+                   f"{results.get('exact_match_accuracy', 0):<12.1f} "
+                   f"{results.get('cohens_kappa', 0):<10.3f} "
+                   f"{results.get('krippendorffs_alpha', 0):<10.3f} "
+                   f"{results.get('icc', 0):<8.3f} "
+                   f"{results.get('hamming_loss', 0):<10.3f}\n")
+        
+        f.write("\n")
+        
+        # Write detailed results for each technique
+        for technique_name, results in all_results.items():
+            f.write(f"DETAILED RESULTS: {technique_name.upper()}\n")
+            f.write("=" * 60 + "\n")
+            
+            # Overall metrics
+            f.write("Overall Metrics:\n")
+            f.write(f"  Exact Match Accuracy: {results.get('exact_match_accuracy', 0):.1f}%\n")
+            f.write(f"  Cohen's Kappa: {results.get('cohens_kappa', 0):.3f}\n")
+            f.write(f"  Krippendorff's Alpha: {results.get('krippendorffs_alpha', 0):.3f}\n")
+            f.write(f"  Intraclass Correlation: {results.get('icc', 0):.3f}\n")
+            f.write(f"  Hamming Loss: {results.get('hamming_loss', 0):.3f}\n")
+            f.write(f"  Subset Accuracy: {results.get('subset_accuracy', 0):.3f}\n\n")
+        
+        f.write("EVALUATION COMPLETED\n")
+
+
+# Legacy compatibility functions that might be expected by existing code
+def calculate_exact_match_accuracy(y_true: List[List[str]], y_pred: List[List[str]]) -> float:
+    """Legacy function for backward compatibility"""
+    metrics = GoEmotionsMetrics(config.GOEMOTIONS_EMOTIONS)
+    return metrics.calculate_exact_match_accuracy(y_true, y_pred)
+
+def calculate_cohens_kappa(y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+    """Legacy function for backward compatibility"""
+    metrics = GoEmotionsMetrics(config.GOEMOTIONS_EMOTIONS)
+    return metrics.calculate_cohens_kappa(y_true_binary, y_pred_binary)
+
+def emotions_to_binary(emotions_lists: List[List[str]], emotions_list: List[str]) -> np.ndarray:
+    """Legacy function for backward compatibility"""
+    metrics = GoEmotionsMetrics(emotions_list)
+    return metrics.emotions_to_binary(emotions_lists)
+
+def calculate_agreement_metrics(y_true: List[List[str]], y_pred: List[List[str]], emotions_list: List[str]) -> Dict:
+    """Calculate agreement metrics (compatibility function)"""
+    metrics = GoEmotionsMetrics(emotions_list)
+    return metrics.comprehensive_evaluation(y_true, y_pred)
+
+def plot_emotion_performance(results: Dict, output_path: str = None):
+    """Plot emotion performance (compatibility function)"""
+    try:
+        import matplotlib.pyplot as plt
+        
+        if 'per_emotion_metrics' not in results:
+            print("No per-emotion metrics found for plotting")
+            return
+        
+        per_emotion = results['per_emotion_metrics']
+        emotions = list(per_emotion.keys())
+        accuracies = [per_emotion[emotion]['accuracy'] * 100 for emotion in emotions]
+        
+        plt.figure(figsize=(12, 6))
+        plt.bar(emotions, accuracies)
+        plt.title('Per-Emotion Accuracy')
+        plt.xlabel('Emotions')
+        plt.ylabel('Accuracy (%)')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        
+        if output_path:
+            plt.savefig(output_path)
+        else:
+            plt.show()
+        
+        plt.close()
+        
+    except ImportError:
+        print("Matplotlib not available for plotting")
+    except Exception as e:
+        print(f"Error creating plot: {e}")
+
+def print_detailed_results(results: Dict, technique_name: str = ""):
+    """Print detailed results (compatibility function)"""
+    metrics = GoEmotionsMetrics(config.GOEMOTIONS_EMOTIONS)
+    metrics.print_results(results, technique_name)
+
+def calculate_per_emotion_metrics(y_true_binary: np.ndarray, y_pred_binary: np.ndarray, emotions_list: List[str]) -> Dict:
+    """Calculate per-emotion metrics (compatibility function)"""
+    metrics = GoEmotionsMetrics(emotions_list)
+    return metrics.calculate_per_emotion_metrics(y_true_binary, y_pred_binary)
+
+def calculate_hamming_loss(y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+    """Calculate Hamming loss (compatibility function)"""
+    return hamming_loss(y_true_binary, y_pred_binary)
+
+def calculate_subset_accuracy(y_true_binary: np.ndarray, y_pred_binary: np.ndarray) -> float:
+    """Calculate subset accuracy (compatibility function)"""
+    metrics = GoEmotionsMetrics(config.GOEMOTIONS_EMOTIONS)
+    return metrics.calculate_subset_accuracy(y_true_binary, y_pred_binary)
+
+def evaluate_predictions(y_true: List[List[str]], y_pred: List[List[str]], emotions_list: List[str]) -> Dict:
+    """Evaluate predictions (compatibility function)"""
+    metrics = GoEmotionsMetrics(emotions_list)
+    return metrics.comprehensive_evaluation(y_true, y_pred)
+
+def create_confusion_matrix(y_true_binary: np.ndarray, y_pred_binary: np.ndarray, emotions_list: List[str]) -> Dict:
+    """Create confusion matrix data (compatibility function)"""
+    from sklearn.metrics import multilabel_confusion_matrix
+    
+    try:
+        cm_array = multilabel_confusion_matrix(y_true_binary, y_pred_binary)
+        confusion_matrices = {}
+        
+        for i, emotion in enumerate(emotions_list):
+            confusion_matrices[emotion] = {
+                'matrix': cm_array[i].tolist(),
+                'tn': int(cm_array[i][0, 0]),
+                'fp': int(cm_array[i][0, 1]), 
+                'fn': int(cm_array[i][1, 0]),
+                'tp': int(cm_array[i][1, 1])
+            }
+        
+        return confusion_matrices
+    except Exception as e:
+        print(f"Error creating confusion matrix: {e}")
+        return {}
+
+def save_results_to_csv(results: Dict, predictions: List[Dict], output_path: str):
+    """Save results to CSV (compatibility function)"""
+    try:
+        # Save main results
+        results_df = pd.DataFrame([{
+            'exact_match_accuracy': results.get('exact_match_accuracy', 0),
+            'cohens_kappa': results.get('cohens_kappa', 0),
+            'krippendorffs_alpha': results.get('krippendorffs_alpha', 0),
+            'icc': results.get('icc', 0),
+            'hamming_loss': results.get('hamming_loss', 0),
+            'subset_accuracy': results.get('subset_accuracy', 0)
+        }])
+        
+        results_df.to_csv(output_path.replace('.csv', '_summary.csv'), index=False)
+        
+        # Save detailed predictions if available
+        if predictions:
+            pred_df = pd.DataFrame(predictions)
+            pred_df.to_csv(output_path.replace('.csv', '_predictions.csv'), index=False)
+        
+        print(f"Results saved to {output_path}")
+        
+    except Exception as e:
+        print(f"Error saving results: {e}")
+
+def format_results_for_display(results: Dict) -> str:
+    """Format results for display (compatibility function)"""
+    output = []
+    output.append("=== EVALUATION RESULTS ===")
+    output.append(f"Exact Match Accuracy: {results.get('exact_match_accuracy', 0):.1f}%")
+    output.append(f"Cohen's Kappa: {results.get('cohens_kappa', 0):.3f}")
+    output.append(f"Krippendorff's Alpha: {results.get('krippendorffs_alpha', 0):.3f}")
+    output.append(f"ICC: {results.get('icc', 0):.3f}")
+    output.append(f"Hamming Loss: {results.get('hamming_loss', 0):.3f}")
+    output.append(f"Subset Accuracy: {results.get('subset_accuracy', 0):.3f}")
+    
+    return "\n".join(output)
+
+# Additional helper functions that might be expected
+def validate_predictions(y_true: List[List[str]], y_pred: List[List[str]]) -> bool:
+    """Validate prediction format"""
+    if len(y_true) != len(y_pred):
+        return False
+    
+    for true_emotions, pred_emotions in zip(y_true, y_pred):
+        if not isinstance(true_emotions, list) or not isinstance(pred_emotions, list):
+            return False
+    
+    return True
+
+def normalize_emotion_lists(emotions_lists: List[List[str]], emotions_list: List[str]) -> List[List[str]]:
+    """Normalize emotion lists to ensure all emotions are valid"""
+    normalized = []
+    for emotions in emotions_lists:
+        valid_emotions = [emotion for emotion in emotions if emotion in emotions_list]
+        normalized.append(valid_emotions)
+    return normalized
+
+
+# Add these functions to your existing utils/metrics.py file
+
+def calculate_agreement_metrics(human_labels: Dict, model_labels: Dict, emotions: List[str]) -> Dict:
     """
-    Calculate the 4 specified metrics for GoEmotions multi-label emotion classification.
+    Calculate agreement metrics between human and model labels (compatibility function)
     
     Args:
-        human_labels: Dict mapping comment_id to list of human-assigned emotions
-        model_labels: Dict mapping comment_id to list of model-assigned emotions  
-        categories: List of all possible emotion categories (28 emotions)
-    
-    Returns:
-        Dictionary containing the 4 metrics
-    """
-    # Convert to binary matrices for calculations
-    comment_ids = list(human_labels.keys())
-    n_comments = len(comment_ids)
-    n_categories = len(categories)
-    
-    human_matrix = np.zeros((n_comments, n_categories), dtype=int)
-    model_matrix = np.zeros((n_comments, n_categories), dtype=int)
-    
-    category_to_idx = {cat: idx for idx, cat in enumerate(categories)}
-    
-    for i, comment_id in enumerate(comment_ids):
-        # Human labels
-        for emotion in human_labels[comment_id]:
-            if emotion in category_to_idx:
-                human_matrix[i, category_to_idx[emotion]] = 1
+        human_labels: Dict mapping comment_id to list of human emotions
+        model_labels: Dict mapping comment_id to list of model emotions  
+        emotions: List of all possible emotions
         
-        # Model labels  
-        for emotion in model_labels[comment_id]:
-            if emotion in category_to_idx:
-                model_matrix[i, category_to_idx[emotion]] = 1
+    Returns:
+        Dictionary containing various agreement metrics
+    """
+    from sklearn.metrics import cohen_kappa_score, accuracy_score
+    import numpy as np
     
-    # Flatten for overall metrics
-    human_flat = human_matrix.flatten()
-    model_flat = model_matrix.flatten()
+    # Align the data - only use comments that have both human and model labels
+    common_ids = set(human_labels.keys()) & set(model_labels.keys())
     
-    # 1. ACCURACY - Exact match accuracy (all emotions must match exactly)
-    exact_matches = np.all(human_matrix == model_matrix, axis=1)
-    accuracy = np.mean(exact_matches) * 100
+    if not common_ids:
+        return {'accuracy': 0, 'kappa': 0, 'alpha': 0, 'icc': 0}
     
-    # 2. COHEN'S KAPPA (κ) - Agreement beyond chance
-    kappa = cohen_kappa_score(human_flat, model_flat)
+    # Convert to lists for easier processing
+    y_true_lists = [human_labels[comment_id] for comment_id in common_ids]
+    y_pred_lists = [model_labels[comment_id] for comment_id in common_ids]
     
-    # 3. KRIPPENDORFF'S ALPHA (α) - Reliability measure
-    # Prepare data for Krippendorff's alpha
-    data = np.array([human_flat, model_flat])
-    alpha = krippendorff.alpha(data, level_of_measurement='nominal')
+    # Calculate exact match accuracy
+    exact_matches = sum(1 for true, pred in zip(y_true_lists, y_pred_lists) 
+                       if set(true) == set(pred))
+    exact_match_accuracy = (exact_matches / len(common_ids)) * 100
     
-    # 4. INTRACLASS CORRELATION (ICC) - Correlation between scores
-    # Using ICC(2,1) - two-way random effects, single measurement, absolute agreement
-    # For multi-label, we calculate correlation between flattened binary matrices
-    if np.var(human_flat) > 0 and np.var(model_flat) > 0:
-        correlation = np.corrcoef(human_flat, model_flat)[0, 1]
-        icc = correlation
-    else:
+    # Convert to binary matrices for other metrics
+    y_true_binary = np.zeros((len(common_ids), len(emotions)))
+    y_pred_binary = np.zeros((len(common_ids), len(emotions)))
+    
+    for i, (true_emotions, pred_emotions) in enumerate(zip(y_true_lists, y_pred_lists)):
+        for emotion in true_emotions:
+            if emotion in emotions:
+                j = emotions.index(emotion)
+                y_true_binary[i, j] = 1
+        
+        for emotion in pred_emotions:
+            if emotion in emotions:
+                j = emotions.index(emotion)
+                y_pred_binary[i, j] = 1
+    
+    # Calculate Cohen's Kappa
+    try:
+        kappa = cohen_kappa_score(y_true_binary.flatten(), y_pred_binary.flatten())
+    except:
+        kappa = 0.0
+    
+    # Calculate Krippendorff's Alpha (simplified)
+    try:
+        import krippendorff
+        data = np.vstack([y_true_binary.flatten(), y_pred_binary.flatten()])
+        alpha = krippendorff.alpha(data, level_of_measurement='nominal')
+        if np.isnan(alpha):
+            alpha = 0.0
+    except:
+        alpha = 0.0
+    
+    # Calculate ICC (simplified correlation)
+    try:
+        from scipy.stats import pearsonr
+        correlations = []
+        for i in range(len(emotions)):
+            if np.var(y_true_binary[:, i]) > 0 and np.var(y_pred_binary[:, i]) > 0:
+                corr, _ = pearsonr(y_true_binary[:, i], y_pred_binary[:, i])
+                if not np.isnan(corr):
+                    correlations.append(corr)
+        icc = np.mean(correlations) if correlations else 0.0
+    except:
         icc = 0.0
     
-    # Per-emotion metrics
-    emotion_metrics = {}
-    for i, emotion in enumerate(categories):
-        human_emotion = human_matrix[:, i]
-        model_emotion = model_matrix[:, i]
-        
-        if len(np.unique(human_emotion)) > 1 and len(np.unique(model_emotion)) > 1:
-            emotion_accuracy = accuracy_score(human_emotion, model_emotion) * 100
-            emotion_kappa = cohen_kappa_score(human_emotion, model_emotion)
-            
-            # Emotion-specific Krippendorff's alpha
-            emotion_data = np.array([human_emotion, model_emotion])
-            emotion_alpha = krippendorff.alpha(emotion_data, level_of_measurement='nominal')
-            
-            # Emotion-specific correlation
-            emotion_corr = np.corrcoef(human_emotion, model_emotion)[0, 1]
-            
-        else:
-            emotion_accuracy = np.mean(human_emotion == model_emotion) * 100
-            emotion_kappa = 0.0
-            emotion_alpha = 0.0
-            emotion_corr = 0.0
-        
-        # Calculate support (number of positive examples)
-        support = np.sum(human_emotion)
-        
-        emotion_metrics[emotion] = {
-            'accuracy': emotion_accuracy,
-            'kappa': emotion_kappa if not np.isnan(emotion_kappa) else 0.0,
-            'alpha': emotion_alpha if not np.isnan(emotion_alpha) else 0.0,
-            'correlation': emotion_corr if not np.isnan(emotion_corr) else 0.0,
-            'support': support
-        }
+    # Calculate Hamming Loss
+    try:
+        from sklearn.metrics import hamming_loss
+        hamming = hamming_loss(y_true_binary, y_pred_binary)
+    except:
+        hamming = 0.0
+    
+    # Calculate Subset Accuracy (Jaccard)
+    try:
+        jaccard_scores = []
+        for true_set, pred_set in zip(y_true_lists, y_pred_lists):
+            true_set = set(true_set)
+            pred_set = set(pred_set)
+            if len(true_set) == 0 and len(pred_set) == 0:
+                jaccard_scores.append(1.0)
+            else:
+                intersection = len(true_set.intersection(pred_set))
+                union = len(true_set.union(pred_set))
+                jaccard_scores.append(intersection / union if union > 0 else 0.0)
+        subset_accuracy = np.mean(jaccard_scores)
+    except:
+        subset_accuracy = 0.0
     
     return {
-        'accuracy': accuracy,
-        'kappa': kappa if not np.isnan(kappa) else 0.0,
-        'alpha': alpha if not np.isnan(alpha) else 0.0,
-        'icc': icc if not np.isnan(icc) else 0.0,
-        'emotion_metrics': emotion_metrics
+        'accuracy': exact_match_accuracy,
+        'exact_match_accuracy': exact_match_accuracy,
+        'kappa': kappa,
+        'alpha': alpha,
+        'icc': icc,
+        'hamming_loss': hamming,
+        'subset_accuracy': subset_accuracy,
+        'num_samples': len(common_ids)
     }
 
 
-def plot_emotion_performance(metrics: Dict[str, float], 
-                           emotions: List[str], 
-                           technique_name: str, 
-                           save_path: str = None):
+def plot_emotion_performance(metrics: Dict, emotions: List[str], technique_name: str, output_path: str):
     """
-    Create visualization of per-emotion performance using the 4 metrics.
+    Create performance visualization (compatibility function)
+    
+    Args:
+        metrics: Dictionary containing performance metrics
+        emotions: List of emotion names
+        technique_name: Name of the technique being evaluated
+        output_path: Path to save the plot
     """
-    emotion_metrics = metrics['emotion_metrics']
-    
-    # Prepare data for plotting - only show top 16 emotions by support
-    emotions_with_support = [(emotion, emotion_metrics[emotion]['support']) for emotion in emotions]
-    emotions_with_support.sort(key=lambda x: x[1], reverse=True)
-    top_emotions = [emotion for emotion, _ in emotions_with_support[:16]]
-    
-    # Prepare data for plotting
-    metric_names = ['Accuracy', 'Cohen\'s κ', 'Krippendorff\'s α', 'Correlation']
-    metric_keys = ['accuracy', 'kappa', 'alpha', 'correlation']
-    
-    fig, axes = plt.subplots(2, 2, figsize=(20, 12))
-    axes = axes.flatten()
-    
-    for i, (metric_name, metric_key) in enumerate(zip(metric_names, metric_keys)):
-        scores = []
-        for emotion in top_emotions:
-            if metric_key == 'accuracy':
-                scores.append(emotion_metrics[emotion][metric_key] / 100)  # Convert to 0-1 scale
-            else:
-                scores.append(emotion_metrics[emotion][metric_key])
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
         
-        bars = axes[i].bar(range(len(top_emotions)), scores, alpha=0.7)
-        axes[i].set_title(f'{metric_name} by Emotion (Top 16)', fontsize=14, fontweight='bold')
-        axes[i].set_ylabel(metric_name)
-        axes[i].set_ylim(-0.1, 1.1)
-        axes[i].set_xticks(range(len(top_emotions)))
-        axes[i].set_xticklabels(top_emotions, rotation=45, ha='right')
+        # Create a simple bar chart of overall metrics
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        # Overall metrics
+        metric_names = ['Exact Match', 'Kappa', 'Alpha', 'ICC']
+        metric_values = [
+            metrics.get('exact_match_accuracy', 0) / 100,  # Convert to 0-1 scale
+            metrics.get('kappa', 0),
+            metrics.get('alpha', 0), 
+            metrics.get('icc', 0)
+        ]
+        
+        ax1.bar(metric_names, metric_values)
+        ax1.set_title(f'{technique_name} - Overall Performance')
+        ax1.set_ylabel('Score')
+        ax1.set_ylim(0, 1)
         
         # Add value labels on bars
-        for j, (bar, score) in enumerate(zip(bars, scores)):
-            height = bar.get_height()
-            if metric_key == 'accuracy':
-                axes[i].text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                            f'{score*100:.1f}%', ha='center', va='bottom', fontsize=8)
-            else:
-                axes[i].text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                            f'{score:.2f}', ha='center', va='bottom', fontsize=8)
-    
-    plt.suptitle(f'GoEmotions Multi-Label Performance: {technique_name}', 
-                 fontsize=16, fontweight='bold')
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
-    plt.close()
+        for i, v in enumerate(metric_values):
+            ax1.text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom')
+        
+        # Sample emotion performance (if available)
+        # For now, just show a placeholder
+        sample_emotions = emotions[:10]  # First 10 emotions
+        sample_scores = [metrics.get('kappa', 0)] * len(sample_emotions)  # Use kappa as sample
+        
+        ax2.barh(sample_emotions, sample_scores)
+        ax2.set_title('Sample Emotion Performance (Kappa)')
+        ax2.set_xlabel('Kappa Score')
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Performance plot saved to {output_path}")
+        
+    except Exception as e:
+        print(f"Could not create performance plot: {e}")
 
 
-def print_detailed_results(metrics: Dict[str, float], 
-                         emotions: List[str], 
-                         technique_name: str):
+def print_detailed_results(metrics: Dict, emotions: List[str], technique_name: str):
     """
-    Print detailed results summary with the 4 metrics.
+    Print detailed results (compatibility function)
+    
+    Args:
+        metrics: Dictionary containing performance metrics
+        emotions: List of emotion names
+        technique_name: Name of the technique
     """
     print(f"\n=== {technique_name} Results ===")
-    print(f"Overall Multi-Label Metrics:")
-    print(f"  Exact Match Accuracy: {metrics['accuracy']:.1f}%")
-    print(f"  Cohen's Kappa (κ): {metrics['kappa']:.3f}")
-    print(f"  Krippendorff's Alpha (α): {metrics['alpha']:.3f}")
-    print(f"  Intraclass Correlation (ICC): {metrics['icc']:.3f}")
+    print(f"Exact Match Accuracy: {metrics.get('exact_match_accuracy', 0):.1f}%")
+    print(f"Cohen's Kappa: {metrics.get('kappa', 0):.3f}")
+    print(f"Krippendorff's Alpha: {metrics.get('alpha', 0):.3f}")
+    print(f"ICC: {metrics.get('icc', 0):.3f}")
+    print(f"Hamming Loss: {metrics.get('hamming_loss', 0):.3f}")
+    print(f"Subset Accuracy: {metrics.get('subset_accuracy', 0):.3f}")
+    print(f"Number of samples: {metrics.get('num_samples', 0)}")
     
-    print("\nPer-Emotion Results (sorted by support):")
-    emotion_metrics = metrics['emotion_metrics']
-    
-    # Sort emotions by support for better readability
-    emotions_with_support = [(emotion, emotion_metrics[emotion]['support']) for emotion in emotions]
-    emotions_with_support.sort(key=lambda x: x[1], reverse=True)
-    
-    for emotion, support in emotions_with_support:
-        em = emotion_metrics[emotion]
-        print(f"  {emotion:15s}: Acc={em['accuracy']:.1f}%, "
-              f"κ={em['kappa']:.3f}, "
-              f"α={em['alpha']:.3f}, "
-              f"Corr={em['correlation']:.3f}, "
-              f"Supp={support}")
-    
-    # Multi-label specific analysis
-    print(f"\nMulti-Label Performance Interpretation:")
-    
-    exact_match = metrics['accuracy']
-    print(f"  Exact Match ({exact_match:.1f}%): ", end="")
-    if exact_match > 50:
-        print("Excellent - Most emotion sets predicted perfectly")
-    elif exact_match > 30:
-        print("Good - Many emotion sets predicted correctly")  
-    elif exact_match > 15:
-        print("Fair - Some emotion sets predicted correctly")
+    # Interpretation
+    kappa = metrics.get('kappa', 0)
+    if kappa >= 0.8:
+        agreement = "Almost Perfect"
+    elif kappa >= 0.6:
+        agreement = "Substantial"
+    elif kappa >= 0.4:
+        agreement = "Moderate"
+    elif kappa >= 0.2:
+        agreement = "Fair"
     else:
-        print("Poor - Few emotion sets predicted correctly")
+        agreement = "Slight"
     
-    kappa = metrics['kappa']
-    print(f"  Overall Agreement (κ={kappa:.3f}): ", end="")
-    if kappa > 0.8:
-        print("Almost Perfect Agreement")
-    elif kappa > 0.6:
-        print("Substantial Agreement")  
-    elif kappa > 0.4:
-        print("Moderate Agreement")
-    elif kappa > 0.2:
-        print("Fair Agreement")
-    elif kappa > 0:
-        print("Slight Agreement")
-    else:
-        print("Poor Agreement")
-    
-    # Emotion group analysis
-    from .emotion_rubric import GoEmotionsRubric
-    emotion_groups = GoEmotionsRubric.get_emotion_groups()
-    
-    print(f"\nPerformance by Emotion Groups:")
-    for group_name, group_emotions in emotion_groups.items():
-        group_kappas = [emotion_metrics[emotion]['kappa'] for emotion in group_emotions if emotion in emotion_metrics]
-        avg_kappa = np.mean(group_kappas) if group_kappas else 0.0
-        print(f"  {group_name:10s}: Average κ = {avg_kappa:.3f}")
-
-
-def calculate_multi_label_specific_metrics(human_labels: Dict[str, List[str]], 
-                                         model_labels: Dict[str, List[str]]) -> Dict[str, float]:
-    """
-    Calculate additional multi-label specific metrics.
-    """
-    comment_ids = list(human_labels.keys())
-    
-    # Hamming Loss (average label-wise error)
-    total_errors = 0
-    total_labels = 0
-    
-    # Jaccard Score (subset accuracy)
-    jaccard_scores = []
-    
-    for comment_id in comment_ids:
-        human_set = set(human_labels[comment_id])
-        model_set = set(model_labels[comment_id])
-        
-        # For Hamming loss
-        all_possible_emotions = human_set.union(model_set)
-        total_labels += len(all_possible_emotions) if all_possible_emotions else 1
-        
-        for emotion in all_possible_emotions:
-            if (emotion in human_set) != (emotion in model_set):
-                total_errors += 1
-        
-        # For Jaccard score
-        if len(human_set.union(model_set)) > 0:
-            jaccard = len(human_set.intersection(model_set)) / len(human_set.union(model_set))
-        else:
-            jaccard = 1.0  # Both sets are empty
-        jaccard_scores.append(jaccard)
-    
-    hamming_loss = total_errors / total_labels if total_labels > 0 else 0.0
-    subset_accuracy = np.mean(jaccard_scores)
-    
-    return {
-        'hamming_loss': hamming_loss,
-        'subset_accuracy': subset_accuracy
-    }
-
-
-# Keep the original function name for compatibility but use new metrics
-def calculate_multilabel_metrics(human_labels: Dict[str, List[str]], 
-                                model_labels: Dict[str, List[str]], 
-                                categories: List[str]) -> Dict[str, float]:
-    """
-    Calculate metrics for multi-label emotion classification.
-    This now calculates the 4 specified metrics plus multi-label specific ones.
-    """
-    # Get the main 4 metrics
-    main_metrics = calculate_agreement_metrics(human_labels, model_labels, categories)
-    
-    # Get additional multi-label metrics
-    ml_metrics = calculate_multi_label_specific_metrics(human_labels, model_labels)
-    
-    # Combine results
-    main_metrics.update(ml_metrics)
-    
-    return main_metrics
+    print(f"Agreement Level: {agreement}")

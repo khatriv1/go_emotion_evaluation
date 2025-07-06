@@ -1,237 +1,291 @@
-# goemotions_evaluation/prompting/active_prompt.py
-
 """
-Active prompting for GoEmotions emotion classification.
-Iteratively selects informative examples to improve classification.
+Active prompting evaluation for GoEmotions emotion classification
+FIXED: Multi-label approach instead of binary classification
 """
 
+import os
+import sys
 import time
-import numpy as np
-from typing import List, Optional, Dict, Tuple
+import logging
+import re
+import ast
+from typing import Dict, List, Tuple, Optional
+import pandas as pd
+import openai
+from pathlib import Path
+
+# Add parent directory to path
+sys.path.append(str(Path(__file__).parent.parent))
+
 from utils.emotion_rubric import GoEmotionsRubric
+from utils.metrics import GoEmotionsMetrics, create_detailed_results_dataframe
+import config
 
-class ActivePromptSelector:
-    """Selects most informative examples for active learning."""
-    
-    def __init__(self):
-        self.example_pool = self._initialize_example_pool()
-        self.selected_examples = {emotion: [] for emotion in self.example_pool.keys()}
-        self.uncertainty_scores = {}
-    
-    def _initialize_example_pool(self) -> Dict[str, List[Tuple[str, bool]]]:
-        """Initialize pool of examples for active selection."""
-        return {
-            'admiration': [
-                ("That was absolutely incredible work!", True),
-                ("I really respect what you accomplished", True),
-                ("What's for dinner?", False),
-                ("Brilliant performance, truly impressive", True),
-                ("Random comment here", False)
-            ],
-            'amusement': [
-                ("Haha this made me laugh so hard", True),
-                ("This is hilarious! 😂", True),
-                ("I'm really sad about this", False),
-                ("LOL that's so funny", True),
-                ("The weather is nice", False)
-            ],
-            'anger': [
-                ("This makes me absolutely furious!", True),
-                ("I'm so angry I could scream", True),
-                ("Thanks for the help", False),
-                ("This is infuriating beyond belief", True),
-                ("Good morning everyone", False)
-            ],
-            'joy': [
-                ("I'm so happy about this!", True),
-                ("This brings me such joy and delight", True),
-                ("I need to buy groceries", False),
-                ("I feel absolutely wonderful!", True),
-                ("The meeting is at 3pm", False)
-            ],
-            'sadness': [
-                ("This makes me so sad and heartbroken", True),
-                ("I feel really down about this", True),
-                ("Great job on the project", False),
-                ("I'm feeling so depressed", True),
-                ("See you tomorrow", False)
-            ],
-            'fear': [
-                ("I'm really scared about this", True),
-                ("This makes me terrified", True),
-                ("I love ice cream", False),
-                ("I'm worried and anxious", True),
-                ("The store closes at 9pm", False)
-            ],
-            'surprise': [
-                ("Wow, I didn't expect that at all!", True),
-                ("What a shocking surprise!", True),
-                ("I knew this would happen", False),
-                ("I'm completely stunned", True),
-                ("Regular daily routine", False)
-            ],
-            'neutral': [
-                ("The meeting is scheduled for 3pm", True),
-                ("Here is the requested information", True),
-                ("I'm absolutely thrilled!", False),
-                ("Weather forecast shows rain", True),
-                ("This is incredibly exciting!", False)
-            ]
-        }
-    
-    def select_examples(self, emotion: str, n_examples: int = 3) -> List[Tuple[str, str]]:
-        """Select most informative examples using uncertainty sampling."""
-        available_examples = self.example_pool.get(emotion, [])
-        
-        # For first iteration, select diverse examples
-        if not self.selected_examples[emotion]:
-            # Select one positive, one negative, and one uncertain
-            positive = [ex for ex in available_examples if ex[1]]
-            negative = [ex for ex in available_examples if not ex[1]]
-            
-            selected = []
-            if positive:
-                selected.append((positive[0][0], "true"))
-            if negative:
-                selected.append((negative[0][0], "false"))
-            if len(positive) > 1:
-                selected.append((positive[1][0], "true"))
-            
-            return selected[:n_examples]
-        
-        # For subsequent iterations, use uncertainty scores
-        return self._select_by_uncertainty(emotion, n_examples)
-    
-    def _select_by_uncertainty(self, emotion: str, n_examples: int) -> List[Tuple[str, str]]:
-        """Select examples with highest uncertainty."""
-        examples = self.example_pool.get(emotion, [])
-        selected = []
-        
-        for comment, label in examples[:n_examples]:
-            selected.append((comment, "true" if label else "false"))
-        
-        return selected
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def get_active_prompt_prediction(text: str,
-                               subreddit: str,
-                               author: str, 
-                               client,
-                               emotion: str,
-                               selector: ActivePromptSelector = None) -> Optional[bool]:
-    """
-    Get active prompting prediction for a single emotion.
+def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
+    """Parse emotion response from LLM output"""
+    response_text = response_text.strip()
     
-    Args:
-        text: The Reddit comment text
-        subreddit: Name of the subreddit
-        author: Comment author
-        client: OpenAI client
-        emotion: Emotion to classify for
-        selector: Active prompt selector instance
-    
-    Returns:
-        Boolean indicating if comment expresses this emotion, None if failed
-    """
-    rubric = GoEmotionsRubric()
-    prompt_descriptions = rubric.get_prompt_descriptions()
-    
-    if emotion not in prompt_descriptions:
-        raise ValueError(f"Unknown emotion: {emotion}")
-    
-    # Initialize selector if not provided
-    if selector is None:
-        selector = ActivePromptSelector()
-    
-    # Get actively selected examples
-    selected_examples = selector.select_examples(emotion, n_examples=3)
-    
-    # Format examples
-    examples_text = []
-    for ex_comment, ex_label in selected_examples:
-        examples_text.append(f"Comment: {ex_comment}\nAnswer: {ex_label}")
-    examples_formatted = "\n\n".join(examples_text)
-    
-    # Create active prompt
-    prompt = f"""You are classifying emotions in Reddit comments.
-
-Emotion: {emotion}
-Definition: {prompt_descriptions[emotion]}
-
-Here are carefully selected examples:
-
-{examples_formatted}
-
-Now classify this comment:
-
-Subreddit: {subreddit}
-Author: {author}
-Comment: {text}
-
-Answer:"""
-
+    # Try to parse as Python list first
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Learn from the examples provided. Respond only with 'true' or 'false'."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=10
-        )
-        
-        result = response.choices[0].message.content.strip().lower()
-        
-        if result == "true":
-            return True
-        elif result == "false":
-            return False
-        else:
-            print(f"Unexpected response for {emotion}: {result}")
-            return None
-            
-    except Exception as e:
-        print(f"Error getting active prompt prediction for {emotion}: {str(e)}")
-        return None
+        # Look for list pattern like ['emotion1', 'emotion2']
+        list_match = re.search(r'\[([^\]]+)\]', response_text)
+        if list_match:
+            list_str = '[' + list_match.group(1) + ']'
+            parsed = ast.literal_eval(list_str)
+            if isinstance(parsed, list):
+                emotions = [str(item).strip().strip("'\"") for item in parsed]
+                # Filter to valid emotions only
+                return [e for e in emotions if e in valid_emotions]
+    except:
+        pass
+    
+    # Try to find emotions mentioned in the text
+    found_emotions = []
+    response_lower = response_text.lower()
+    
+    for emotion in valid_emotions:
+        if emotion.lower() in response_lower:
+            found_emotions.append(emotion)
+    
+    return found_emotions
 
-
-def get_active_prompt_prediction_all_emotions(text: str,
-                                            subreddit: str,
-                                            author: str,
-                                            client) -> List[str]:
+def get_active_prompt_prediction_all_emotions(text: str, subreddit: str, author: str, client, model="gpt-3.5-turbo") -> List[str]:
     """
-    Get active prompting predictions for all GoEmotions categories.
+    Get active prompt prediction for all emotions in a comment
+    FIXED: Multi-label approach with uncertainty-based refinement
     
     Args:
-        text: The Reddit comment text
+        text: The text to classify (matches evaluation file parameter name)
         subreddit: Name of the subreddit
         author: Comment author
         client: OpenAI client
-    
+        model: Model to use for prediction
+        
     Returns:
         List of emotions assigned to the comment
     """
-    emotions = [
-        'admiration', 'amusement', 'anger', 'annoyance', 'approval',
-        'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
-        'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
-        'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
-        'pride', 'realization', 'relief', 'remorse', 'sadness',
-        'surprise', 'neutral'
-    ]
-    
-    assigned_emotions = []
-    selector = ActivePromptSelector()  # Share selector across emotions
-    
-    for emotion in emotions:
-        prediction = get_active_prompt_prediction(
-            text, subreddit, author, client, emotion, selector
+    try:
+        # Initialize emotion rubric
+        emotion_rubric = GoEmotionsRubric()
+        emotions = emotion_rubric.get_all_emotions()
+        
+        # Step 1: Get initial prediction to identify uncertain emotions
+        initial_prompt = f"""Classify this Reddit comment into the most appropriate emotions.
+
+Available emotions: {emotion_rubric.format_emotions_for_prompt()}
+
+Comment: "{text}"
+
+Instructions:
+- Select only PRIMARY emotions clearly expressed
+- Most comments have 1-2 emotions maximum
+- Be selective - don't over-predict
+- If no clear emotion, select 'neutral'
+
+Respond with a Python list of emotions: ['emotion1', 'emotion2']
+
+Response:"""
+        
+        initial_response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an expert emotion classifier. Always respond with a Python list of emotions."},
+                {"role": "user", "content": initial_prompt}
+            ],
+            max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
+            temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
         )
         
-        if prediction is True:
-            assigned_emotions.append(emotion)
+        # Parse initial response
+        initial_emotions = parse_emotion_response(initial_response.choices[0].message.content, emotions)
         
-        # Rate limiting
-        time.sleep(0.5)
+        # Step 2: Active prompting for refinement with examples
+        # Create active prompt focusing on uncertain emotions
+        active_prompt = create_active_prompt(text, emotion_rubric, initial_emotions)
+        
+        active_response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are an expert emotion classifier. Carefully consider the examples and respond with a Python list of emotions."},
+                {"role": "user", "content": active_prompt}
+            ],
+            max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
+            temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
+        )
+        
+        # Parse final response
+        predicted_emotions = parse_emotion_response(active_response.choices[0].message.content, emotions)
+        
+        # Fallback to initial prediction if parsing fails
+        if not predicted_emotions:
+            predicted_emotions = initial_emotions if initial_emotions else ['neutral']
+        
+        # Return just the list of emotions (matching other prompting functions)
+        return predicted_emotions
+        
+    except Exception as e:
+        logger.error(f"Error in get_active_prompt_prediction_all_emotions: {str(e)}")
+        return ['neutral']
+
+def create_active_prompt(text: str, emotion_rubric: GoEmotionsRubric, uncertain_emotions: List[str] = None) -> str:
+    """
+    Create an active prompt that focuses on uncertain emotions
     
-    return assigned_emotions
+    Args:
+        text: The text to classify
+        emotion_rubric: GoEmotionsRubric instance  
+        uncertain_emotions: List of emotions to focus on (if any)
+        
+    Returns:
+        Active prompt string
+    """
+    if uncertain_emotions is None:
+        uncertain_emotions = []
+    
+    prompt = f"""Classify this Reddit comment into the most appropriate emotions.
+
+Available emotions: {emotion_rubric.format_emotions_for_prompt()}
+
+"""
+    
+    # Add focused examples for uncertain emotions
+    if uncertain_emotions:
+        prompt += f"""Based on initial analysis, these emotions might be present: {', '.join(uncertain_emotions)}
+
+Here are some clarifying examples:
+"""
+        for emotion in uncertain_emotions[:3]:  # Limit to 3 emotions to avoid long prompts
+            examples = emotion_rubric.get_emotion_examples(emotion, 1)
+            if examples:
+                prompt += f"\n{emotion.title()}: \"{examples[0]}\""
+        
+        prompt += "\n\n"
+    
+    prompt += f"""Now classify this comment:
+Comment: "{text}"
+
+Think step by step:
+1. What emotions are clearly expressed?
+2. Are there any subtle emotions that might be missed?
+3. Consider the context and tone carefully
+4. Be selective - most comments have 1-2 emotions maximum
+
+Instructions:
+- Select only PRIMARY emotions clearly expressed
+- Don't over-predict - be conservative
+- If no clear emotion, select 'neutral'
+
+Respond with a Python list of emotions: ['emotion1', 'emotion2']
+
+Response:"""
+    
+    return prompt
+
+def evaluate_active_prompt(df: pd.DataFrame, emotions_list: List[str], output_dir: str, data_loader=None) -> Dict:
+    """
+    Evaluate using Active Prompting technique
+    FIXED: Properly handle DataFrame structure and avoid ID-related errors
+    
+    Args:
+        df: DataFrame with comments and emotions
+        emotions_list: List of all emotions
+        output_dir: Directory to save results
+        data_loader: Data loader instance (optional)
+        
+    Returns:
+        Dictionary containing evaluation results
+    """
+    try:
+        # Initialize components
+        rubric = GoEmotionsRubric()
+        metrics_calculator = GoEmotionsMetrics(emotions_list)
+        client = openai.OpenAI(api_key=getattr(config, 'OPENAI_API_KEY', os.getenv('OPENAI_API_KEY')))
+        
+        predictions = []
+        
+        print(f"Evaluating on {len(df)} comments")
+        
+        for idx, (index, row) in enumerate(df.iterrows(), 1):
+            print(f"Processing comment {idx}/{len(df)}")
+            
+            try:
+                comment = row['text']
+                true_emotions = row['emotions'] if isinstance(row['emotions'], list) else []
+                
+                # Create a safe comment ID - FIXED: Use DataFrame index instead of undefined column
+                comment_id = f"comment_{index}" if 'id' not in row else str(row['id'])
+                
+                print(f"Comment: {comment[:50]}...")
+                
+                # Get prediction using the new function
+                pred_emotions = get_active_prompt_prediction_all_emotions(
+                    comment, 
+                    row.get('subreddit', ''), 
+                    row.get('author', ''), 
+                    client
+                )
+                
+                print(f"Human: {true_emotions}")
+                print(f"Model: {pred_emotions}")
+                
+                # Check exact match
+                exact_match = set(true_emotions) == set(pred_emotions)
+                print(f"Match: {exact_match}")
+                print()
+                
+                # Store prediction
+                prediction = {
+                    'id': comment_id,
+                    'text': comment,
+                    'human_emotions': true_emotions,
+                    'predicted_emotions': pred_emotions,
+                    'exact_match': exact_match
+                }
+                predictions.append(prediction)
+                
+                # Add small delay to avoid rate limiting
+                time.sleep(getattr(config, 'REQUEST_DELAY', 1.0))
+                
+            except Exception as e:
+                print(f"Error processing comment {comment_id}: {e}")
+                # Continue with next comment instead of failing completely
+                continue
+        
+        # Calculate metrics if we have predictions
+        if not predictions:
+            print("No successful predictions to evaluate")
+            return None
+        
+        # Extract true and predicted emotions for metrics
+        y_true = [pred['human_emotions'] for pred in predictions]
+        y_pred = [pred['predicted_emotions'] for pred in predictions]
+        
+        # Calculate comprehensive metrics
+        results = metrics_calculator.comprehensive_evaluation(y_true, y_pred)
+        
+        # Print results
+        metrics_calculator.print_results(results, "Active Prompting")
+        
+        # Create detailed results DataFrame
+        detailed_df = create_detailed_results_dataframe(predictions, emotions_list)
+        
+        # Save detailed results
+        detailed_path = os.path.join(output_dir, "detailed_results.csv")
+        detailed_df.to_csv(detailed_path, index=False)
+        
+        # Add detailed results to return dict
+        results['detailed_results'] = detailed_df
+        results['predictions'] = predictions
+        
+        print(f"Detailed results saved to {detailed_path}")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Active Prompting evaluation failed: {e}")
+        print(f"✗ Active Prompting failed: {e}")
+        return None

@@ -2,175 +2,65 @@
 
 """
 Auto-CoT (Automatic Chain of Thought) prompting for GoEmotions emotion classification.
-Automatically generates reasoning chains for classification.
+FIXED: Multi-label approach with automatic reasoning chains
 """
 
 import time
-from typing import List, Optional, Dict
-from utils.emotion_rubric import GoEmotionsRubric
+import re
+import ast
+from typing import List, Optional
 
-def generate_auto_cot_examples(emotion: str) -> str:
-    """Generate automatic reasoning chains for examples."""
-    reasoning_examples = {
-        'admiration': [
-            {
-                "comment": "That was absolutely incredible work!",
-                "reasoning": "Let's think step by step. The comment uses the word 'incredible' which is strongly positive and expresses high regard for someone's work. This shows respect and finding something impressive. This matches the 'admiration' emotion.",
-                "answer": "true"
-            },
-            {
-                "comment": "I hate this so much",
-                "reasoning": "Let's think step by step. This comment expresses strong negative feeling ('hate') which is the opposite of admiration. There's no respect or positive regard shown. This doesn't match the 'admiration' emotion.",
-                "answer": "false"
-            }
-        ],
-        'amusement': [
-            {
-                "comment": "Haha this is hilarious!",
-                "reasoning": "Let's think step by step. The comment starts with 'Haha' which indicates laughter, and explicitly states 'hilarious' which means very funny. This clearly shows the commenter finds something entertaining and amusing.",
-                "answer": "true"
-            },
-            {
-                "comment": "This is very serious and important",
-                "reasoning": "Let's think step by step. This comment emphasizes seriousness and importance, which is the opposite of amusement. There's no indication of humor or entertainment. This doesn't match the 'amusement' emotion.",
-                "answer": "false"
-            }
-        ],
-        'anger': [
-            {
-                "comment": "This makes me absolutely furious!",
-                "reasoning": "Let's think step by step. The word 'furious' is a strong indicator of anger, and 'absolutely' intensifies this feeling. The comment expresses strong displeasure and antagonism towards something.",
-                "answer": "true"
-            },
-            {
-                "comment": "I'm so happy about this outcome",
-                "reasoning": "Let's think step by step. This comment expresses happiness and satisfaction, which is the opposite of anger. There's no indication of displeasure or antagonism. This doesn't match the 'anger' emotion.",
-                "answer": "false"
-            }
-        ],
-        'joy': [
-            {
-                "comment": "I'm so happy and delighted!",
-                "reasoning": "Let's think step by step. The comment explicitly states 'happy' and 'delighted' which are direct indicators of joy and positive feelings. This clearly expresses pleasure and happiness.",
-                "answer": "true"
-            },
-            {
-                "comment": "This makes me incredibly sad",
-                "reasoning": "Let's think step by step. This comment expresses sadness, which is the opposite of joy. There's no indication of happiness or pleasure. This doesn't match the 'joy' emotion.",
-                "answer": "false"
-            }
-        ],
-        'neutral': [
-            {
-                "comment": "The meeting is scheduled for 3pm today",
-                "reasoning": "Let's think step by step. This is a factual statement providing information about meeting time. There are no emotional words or expressions of feeling. This is purely informational and neutral.",
-                "answer": "true"
-            },
-            {
-                "comment": "I'm absolutely thrilled about this!",
-                "reasoning": "Let's think step by step. This comment expresses strong positive emotion ('thrilled') with emphasis ('absolutely'). This shows excitement and joy, not neutrality. This doesn't match the 'neutral' emotion.",
-                "answer": "false"
-            }
-        ]
-    }
+def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
+    """Parse emotion response from LLM output"""
+    response_text = response_text.strip()
     
-    # Get examples for the emotion
-    examples = reasoning_examples.get(emotion, [])
-    
-    # Format with reasoning chains
-    formatted = []
-    for ex in examples:
-        formatted.append(f"Comment: {ex['comment']}\n{ex['reasoning']}\nAnswer: {ex['answer']}")
-    
-    return "\n\n".join(formatted)
-
-def get_auto_cot_prediction(text: str,
-                          subreddit: str,
-                          author: str, 
-                          client,
-                          emotion: str) -> Optional[bool]:
-    """
-    Get Auto-CoT prediction for a single emotion.
-    
-    Args:
-        text: The Reddit comment text
-        subreddit: Name of the subreddit
-        author: Comment author
-        client: OpenAI client
-        emotion: Emotion to classify for
-    
-    Returns:
-        Boolean indicating if comment expresses this emotion, None if failed
-    """
-    rubric = GoEmotionsRubric()
-    prompt_descriptions = rubric.get_prompt_descriptions()
-    
-    if emotion not in prompt_descriptions:
-        raise ValueError(f"Unknown emotion: {emotion}")
-    
-    # Get auto-generated CoT examples
-    cot_examples = generate_auto_cot_examples(emotion)
-    
-    # Create Auto-CoT prompt
-    prompt = f"""You are classifying emotions in Reddit comments.
-
-Emotion: {emotion}
-Definition: {prompt_descriptions[emotion]}
-
-Here are some examples with reasoning:
-
-{cot_examples}
-
-Now classify this comment using the same step-by-step reasoning:
-
-Subreddit: {subreddit}
-Author: {author}
-Comment: {text}
-
-Let's think step by step."""
-
+    # Try to parse as Python list first
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Always think step by step and end with 'Answer: true' or 'Answer: false'."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=200
-        )
-        
-        result = response.choices[0].message.content.strip().lower()
-        
-        # Extract answer from reasoning
-        if "answer: true" in result or "answer is true" in result or result.endswith("true"):
-            return True
-        elif "answer: false" in result or "answer is false" in result or result.endswith("false"):
-            return False
-        else:
-            print(f"Could not extract answer from Auto-CoT response for {emotion}: {result}")
-            return None
-            
-    except Exception as e:
-        print(f"Error getting Auto-CoT prediction for {emotion}: {str(e)}")
-        return None
+        # Look for list pattern like ['emotion1', 'emotion2']
+        list_match = re.search(r'\[([^\]]+)\]', response_text)
+        if list_match:
+            list_str = '[' + list_match.group(1) + ']'
+            parsed = ast.literal_eval(list_str)
+            if isinstance(parsed, list):
+                emotions = [str(item).strip().strip("'\"") for item in parsed]
+                # Filter to valid emotions only
+                return [e for e in emotions if e in valid_emotions]
+    except:
+        pass
+    
+    # Try to find emotions mentioned in the text
+    found_emotions = []
+    response_lower = response_text.lower()
+    
+    for emotion in valid_emotions:
+        if emotion.lower() in response_lower:
+            found_emotions.append(emotion)
+    
+    return found_emotions
 
+def generate_auto_cot_examples() -> str:
+    """Generate automatic reasoning chain examples"""
+    return """Here are examples with step-by-step reasoning:
+
+Comment: "That was absolutely incredible work!"
+Let's think step by step: The comment uses "absolutely incredible" which shows high praise and positive regard for someone's work. This indicates admiration for the quality of work.
+Answer: ['admiration']
+
+Comment: "I hate this so much, it's completely unfair"
+Let's think step by step: The comment expresses "hate" and "unfair" which are strong negative emotions. "Hate" indicates anger, and "unfair" suggests disapproval of the situation.
+Answer: ['anger', 'disapproval']
+
+Comment: "The report is due tomorrow at 5pm"
+Let's think step by step: This is a factual statement providing deadline information. There are no emotional words or expressions of feeling. This is purely informational.
+Answer: ['neutral']"""
 
 def get_auto_cot_prediction_all_emotions(text: str,
                                        subreddit: str,
                                        author: str,
                                        client) -> List[str]:
     """
-    Get Auto-CoT predictions for all GoEmotions categories.
-    
-    Args:
-        text: The Reddit comment text
-        subreddit: Name of the subreddit
-        author: Comment author
-        client: OpenAI client
-    
-    Returns:
-        List of emotions assigned to the comment
+    Get Auto-CoT predictions using multi-label approach.
+    FIXED: Single comprehensive prompt with auto-generated reasoning
     """
     emotions = [
         'admiration', 'amusement', 'anger', 'annoyance', 'approval',
@@ -181,17 +71,49 @@ def get_auto_cot_prediction_all_emotions(text: str,
         'surprise', 'neutral'
     ]
     
-    assigned_emotions = []
+    examples = generate_auto_cot_examples()
     
-    for emotion in emotions:
-        prediction = get_auto_cot_prediction(
-            text, subreddit, author, client, emotion
+    # Create Auto-CoT prompt
+    prompt = f"""{examples}
+
+Now classify this comment using the same step-by-step reasoning:
+
+Available emotions: {', '.join(emotions)}
+
+Comment: "{text}"
+Subreddit: {subreddit}
+Author: {author}
+
+Let's think step by step: [Analyze the emotional content, key words, and tone]
+
+Instructions:
+- Select only PRIMARY emotions clearly expressed
+- Most comments have 1-2 emotions maximum
+- Be selective - don't over-predict
+- If no clear emotion, select 'neutral'
+
+Answer:"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing emotions in text. Think step by step like the examples and be selective. End with 'Answer: [emotions_list]'."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=200
         )
         
-        if prediction is True:
-            assigned_emotions.append(emotion)
+        result = response.choices[0].message.content.strip()
+        predicted_emotions = parse_emotion_response(result, emotions)
         
-        # Rate limiting
-        time.sleep(0.5)
-    
-    return assigned_emotions
+        # Fallback to neutral if no emotions found
+        if not predicted_emotions:
+            predicted_emotions = ['neutral']
+            
+        return predicted_emotions
+        
+    except Exception as e:
+        print(f"Error getting Auto-CoT prediction: {str(e)}")
+        return ['neutral']
