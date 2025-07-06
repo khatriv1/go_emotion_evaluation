@@ -78,6 +78,13 @@ class GoEmotionsDataLoader:
         if text_column != 'text':
             df = df.rename(columns={text_column: 'text'})
         
+        # Ensure we have comment_id
+        if 'comment_id' not in df.columns:
+            if 'id' in df.columns:
+                df = df.rename(columns={'id': 'comment_id'})
+            else:
+                df['comment_id'] = df.index.astype(str)
+        
         # Ensure we have all emotion columns
         for emotion in self.emotions_list:
             if emotion not in df.columns:
@@ -101,7 +108,7 @@ class GoEmotionsDataLoader:
         
         if len(df) < initial_count:
             self.logger.info(f"Filtered to {len(df)} comments with at least 1 emotion")
-            print(f"Filtered to {len(df)} comments with at least 1 emotions")
+            print(f"Filtered to {len(df)} comments with at least 1 emotion")
         
         # Print emotion statistics
         self._print_emotion_statistics(df)
@@ -172,7 +179,7 @@ class GoEmotionsDataLoader:
         return examples[:n_examples]
 
 
-# MISSING FUNCTIONS THAT EXISTING EVALUATION FILES EXPECT
+# COMPATIBILITY FUNCTIONS FOR EXISTING EVALUATION FILES
 # These functions maintain compatibility with existing evaluation files
 
 def load_and_preprocess_goemotions_data(data_path: str, sample_size: Optional[int] = None) -> Tuple[pd.DataFrame, List[str]]:
@@ -183,33 +190,53 @@ def load_and_preprocess_goemotions_data(data_path: str, sample_size: Optional[in
     loader = GoEmotionsDataLoader(data_path)
     return loader.load_data(sample_size)
 
-def get_comment_emotions(row, emotions_list: List[str]) -> List[str]:
+def get_comment_emotions(row, annotator='expert') -> List[str]:
     """
-    Get emotions for a comment row (compatibility function)
+    Extract emotions from a comment row (compatibility function)
+    
+    Args:
+        row: DataFrame row containing emotion annotations
+        annotator: Type of annotator ('expert' or other)
+        
+    Returns:
+        List of emotions present in the comment
     """
+    # First try to use 'emotions' column if it exists
     if 'emotions' in row and isinstance(row['emotions'], list):
         return row['emotions']
     
     # Fallback: extract from individual emotion columns
-    emotions = []
-    for emotion in emotions_list:
+    emotions = config.GOEMOTIONS_EMOTIONS
+    present_emotions = []
+    for emotion in emotions:
         if emotion in row and row[emotion] == 1:
-            emotions.append(emotion)
-    return emotions
+            present_emotions.append(emotion)
+    
+    return present_emotions
 
-def filter_annotated_comments(df: pd.DataFrame) -> pd.DataFrame:
+def filter_annotated_comments(df: pd.DataFrame, min_emotions: int = 1, annotator: str = 'expert') -> pd.DataFrame:
     """
-    Filter comments that have at least one emotion annotation (compatibility function)
+    Filter to comments that have at least min_emotions annotations (compatibility function)
+    
+    Args:
+        df: DataFrame with emotion annotations
+        min_emotions: Minimum number of emotions required
+        annotator: Type of annotator (ignored for compatibility)
+        
+    Returns:
+        Filtered DataFrame
     """
     # If 'emotions' column exists, filter by it
     if 'emotions' in df.columns:
-        return df[df['emotions'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)]
+        return df[df['emotions'].apply(lambda x: len(x) >= min_emotions if isinstance(x, list) else False)]
     
     # Fallback: check individual emotion columns
     emotion_columns = [col for col in df.columns if col in config.GOEMOTIONS_EMOTIONS]
     if emotion_columns:
-        has_emotion = df[emotion_columns].sum(axis=1) > 0
-        return df[has_emotion]
+        emotion_counts = df[emotion_columns].sum(axis=1)
+        filtered_df = df[emotion_counts >= min_emotions]
+        print(f"Filtered from {len(df)} to {len(filtered_df)} comments with at least {min_emotions} emotion(s)")
+        return filtered_df
     
     return df
 
@@ -268,136 +295,7 @@ def validate_goemotions_data(df: pd.DataFrame) -> bool:
     
     return len(emotion_columns) > 0 or has_emotions_col
 
-# For backward compatibility, also support the class being imported directly
+# Legacy support for different import patterns
 def GoEmotionsDataLoader_legacy(data_path: str):
     """Legacy support for different import patterns"""
     return GoEmotionsDataLoader(data_path)
-
-
-# Add these functions to your existing utils/data_loader.py file
-
-def load_and_preprocess_goemotions_data(data_path: str) -> pd.DataFrame:
-    """
-    Load and preprocess GoEmotions data (compatibility function for evaluation files)
-    
-    Args:
-        data_path: Path to the GoEmotions CSV file
-        
-    Returns:
-        Processed DataFrame with comments and emotion annotations
-    """
-    # Load the CSV file
-    df = pd.read_csv(data_path)
-    
-    # Check if we have the expected format
-    # GoEmotions format typically has: text, then emotion columns
-    expected_emotions = [
-        'admiration', 'amusement', 'anger', 'annoyance', 'approval',
-        'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
-        'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
-        'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
-        'pride', 'realization', 'relief', 'remorse', 'sadness',
-        'surprise', 'neutral'
-    ]
-    
-    # Find text column
-    text_column = None
-    possible_text_cols = ['text', 'comment_text', 'comment']
-    for col in possible_text_cols:
-        if col in df.columns:
-            text_column = col
-            break
-    
-    if text_column is None:
-        raise ValueError(f"No text column found. Available columns: {list(df.columns)}")
-    
-    # Rename to standard format
-    if text_column != 'text':
-        df = df.rename(columns={text_column: 'text'})
-    
-    # Ensure we have comment_id
-    if 'comment_id' not in df.columns:
-        if 'id' in df.columns:
-            df = df.rename(columns={'id': 'comment_id'})
-        else:
-            df['comment_id'] = df.index.astype(str)
-    
-    # Check for emotion columns
-    missing_emotions = []
-    for emotion in expected_emotions:
-        if emotion not in df.columns:
-            missing_emotions.append(emotion)
-    
-    if missing_emotions:
-        print(f"Warning: Missing emotion columns: {missing_emotions}")
-        # Add missing columns as zeros
-        for emotion in missing_emotions:
-            df[emotion] = 0
-    
-    # Convert emotion columns to binary
-    for emotion in expected_emotions:
-        if emotion in df.columns:
-            df[emotion] = pd.to_numeric(df[emotion], errors='coerce').fillna(0)
-            df[emotion] = (df[emotion] > 0.5).astype(int)
-    
-    print(f"Loaded {len(df)} comments with emotion annotations")
-    return df
-
-
-def get_comment_emotions(row, annotator='expert') -> List[str]:
-    """
-    Extract emotions from a comment row (compatibility function)
-    
-    Args:
-        row: DataFrame row containing emotion annotations
-        annotator: Type of annotator ('expert' or other)
-        
-    Returns:
-        List of emotions present in the comment
-    """
-    emotions = [
-        'admiration', 'amusement', 'anger', 'annoyance', 'approval',
-        'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
-        'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
-        'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
-        'pride', 'realization', 'relief', 'remorse', 'sadness',
-        'surprise', 'neutral'
-    ]
-    
-    present_emotions = []
-    for emotion in emotions:
-        if emotion in row and row[emotion] == 1:
-            present_emotions.append(emotion)
-    
-    return present_emotions
-
-
-def filter_annotated_comments(df: pd.DataFrame, min_emotions: int = 1, annotator: str = 'expert') -> pd.DataFrame:
-    """
-    Filter to comments that have at least min_emotions annotations (compatibility function)
-    
-    Args:
-        df: DataFrame with emotion annotations
-        min_emotions: Minimum number of emotions required
-        annotator: Type of annotator (ignored for compatibility)
-        
-    Returns:
-        Filtered DataFrame
-    """
-    emotions = [
-        'admiration', 'amusement', 'anger', 'annoyance', 'approval',
-        'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
-        'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
-        'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
-        'pride', 'realization', 'relief', 'remorse', 'sadness',
-        'surprise', 'neutral'
-    ]
-    
-    # Count emotions per comment
-    emotion_counts = df[emotions].sum(axis=1)
-    
-    # Filter to comments with at least min_emotions
-    filtered_df = df[emotion_counts >= min_emotions]
-    
-    print(f"Filtered from {len(df)} to {len(filtered_df)} comments with at least {min_emotions} emotion(s)")
-    return filtered_df

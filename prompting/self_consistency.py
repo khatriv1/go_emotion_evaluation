@@ -8,8 +8,14 @@ FIXED: Multi-label approach with multiple reasoning paths
 import time
 import re
 import ast
+import logging
 from typing import List, Optional, Dict
 from collections import Counter
+import config
+import openai
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
     """Parse emotion response from LLM output"""
@@ -79,29 +85,51 @@ Response as Python list: ['emotion1', 'emotion2']
 
 Response:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Provide your reasoning and be selective with emotion selection."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=temperature,
-            max_tokens=150
-        )
-        
-        result = response.choices[0].message.content.strip()
-        predicted_emotions = parse_emotion_response(result, emotions)
-        
-        # Fallback to neutral if no emotions found
-        if not predicted_emotions:
-            predicted_emotions = ['neutral']
+    max_retries = getattr(config, 'MAX_RETRIES', 3)
+    retry_delay = getattr(config, 'RETRY_DELAY', 1.0)
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing emotions in text. Provide your reasoning and be selective with emotion selection."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=temperature,
+                max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150)
+            )
             
-        return predicted_emotions
+            result = response.choices[0].message.content.strip()
+            predicted_emotions = parse_emotion_response(result, emotions)
             
-    except Exception as e:
-        print(f"Error in reasoning path: {str(e)}")
-        return ['neutral']
+            # Fallback to neutral if no emotions found
+            if not predicted_emotions:
+                predicted_emotions = ['neutral']
+                
+            return predicted_emotions
+                
+        except openai.RateLimitError as e:
+            logger.warning(f"Rate limit exceeded in reasoning path on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                time.sleep(wait_time)
+            else:
+                logger.error("Max retries exceeded for reasoning path")
+                return ['neutral']
+                
+        except openai.APIError as e:
+            logger.error(f"API error in reasoning path on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                return ['neutral']
+                
+        except Exception as e:
+            logger.error(f"Error in reasoning path: {e}")
+            return ['neutral']
+    
+    return ['neutral']
 
 def get_self_consistency_prediction_all_emotions(text: str,
                                                subreddit: str,
@@ -131,7 +159,7 @@ def get_self_consistency_prediction_all_emotions(text: str,
         time.sleep(0.2)
     
     if not all_predictions:
-        print(f"No valid predictions obtained")
+        logger.warning("No valid predictions obtained from any reasoning path")
         return ['neutral']
     
     # Aggregate predictions using majority voting for each emotion
@@ -140,7 +168,7 @@ def get_self_consistency_prediction_all_emotions(text: str,
         for emotion in pred_list:
             emotion_votes[emotion] += 1
     
-    # Select emotions that appear in majority of predictions (> 50%)
+    # Select emotions that appear in majority of predictions (> 40% threshold for multi-label)
     threshold = len(all_predictions) * 0.4  # Lower threshold for multi-label
     final_emotions = [emotion for emotion, count in emotion_votes.items() 
                      if count >= threshold]
@@ -155,7 +183,7 @@ def get_self_consistency_prediction_all_emotions(text: str,
     if not final_emotions:
         final_emotions = ['neutral']
     
-    print(f"Self-consistency votes: {dict(emotion_votes)}")
-    print(f"Final emotions: {final_emotions}")
+    logger.info(f"Self-consistency votes: {dict(emotion_votes)}")
+    logger.info(f"Final emotions: {final_emotions}")
     
     return final_emotions

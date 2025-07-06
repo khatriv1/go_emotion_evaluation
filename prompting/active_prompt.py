@@ -68,6 +68,9 @@ def get_active_prompt_prediction_all_emotions(text: str, subreddit: str, author:
     Returns:
         List of emotions assigned to the comment
     """
+    max_retries = getattr(config, 'MAX_RETRIES', 3)
+    retry_delay = getattr(config, 'RETRY_DELAY', 1.0)
+    
     try:
         # Initialize emotion rubric
         emotion_rubric = GoEmotionsRubric()
@@ -90,42 +93,93 @@ Respond with a Python list of emotions: ['emotion1', 'emotion2']
 
 Response:"""
         
-        initial_response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an expert emotion classifier. Always respond with a Python list of emotions."},
-                {"role": "user", "content": initial_prompt}
-            ],
-            max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
-            temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
-        )
-        
-        # Parse initial response
-        initial_emotions = parse_emotion_response(initial_response.choices[0].message.content, emotions)
+        # Try initial prediction with error handling
+        initial_emotions = ['neutral']  # fallback
+        for attempt in range(max_retries):
+            try:
+                initial_response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert emotion classifier. Always respond with a Python list of emotions."},
+                        {"role": "user", "content": initial_prompt}
+                    ],
+                    max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
+                    temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
+                )
+                
+                # Parse initial response
+                initial_emotions = parse_emotion_response(initial_response.choices[0].message.content, emotions)
+                if not initial_emotions:
+                    initial_emotions = ['neutral']
+                break
+                
+            except openai.RateLimitError as e:
+                logger.warning(f"Rate limit in initial prediction, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Max retries exceeded for initial prediction")
+                    break
+                    
+            except openai.APIError as e:
+                logger.error(f"API error in initial prediction, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error in initial prediction: {e}")
+                break
         
         # Step 2: Active prompting for refinement with examples
-        # Create active prompt focusing on uncertain emotions
         active_prompt = create_active_prompt(text, emotion_rubric, initial_emotions)
         
-        active_response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an expert emotion classifier. Carefully consider the examples and respond with a Python list of emotions."},
-                {"role": "user", "content": active_prompt}
-            ],
-            max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
-            temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
-        )
+        # Try active prediction with error handling
+        for attempt in range(max_retries):
+            try:
+                active_response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert emotion classifier. Carefully consider the examples and respond with a Python list of emotions."},
+                        {"role": "user", "content": active_prompt}
+                    ],
+                    max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 150),
+                    temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.1)
+                )
+                
+                # Parse final response
+                predicted_emotions = parse_emotion_response(active_response.choices[0].message.content, emotions)
+                
+                # Fallback to initial prediction if parsing fails
+                if not predicted_emotions:
+                    predicted_emotions = initial_emotions if initial_emotions else ['neutral']
+                
+                return predicted_emotions
+                
+            except openai.RateLimitError as e:
+                logger.warning(f"Rate limit in active prediction, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Max retries exceeded for active prediction")
+                    return initial_emotions if initial_emotions else ['neutral']
+                    
+            except openai.APIError as e:
+                logger.error(f"API error in active prediction, attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    return initial_emotions if initial_emotions else ['neutral']
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error in active prediction: {e}")
+                return initial_emotions if initial_emotions else ['neutral']
         
-        # Parse final response
-        predicted_emotions = parse_emotion_response(active_response.choices[0].message.content, emotions)
-        
-        # Fallback to initial prediction if parsing fails
-        if not predicted_emotions:
-            predicted_emotions = initial_emotions if initial_emotions else ['neutral']
-        
-        # Return just the list of emotions (matching other prompting functions)
-        return predicted_emotions
+        # If we get here, return initial emotions as fallback
+        return initial_emotions if initial_emotions else ['neutral']
         
     except Exception as e:
         logger.error(f"Error in get_active_prompt_prediction_all_emotions: {str(e)}")

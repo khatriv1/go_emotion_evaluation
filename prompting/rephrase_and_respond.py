@@ -8,7 +8,13 @@ FIXED: Multi-label approach with rephrasing step
 import time
 import re
 import ast
+import logging
 from typing import List, Optional
+import config
+import openai
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
     """Parse emotion response from LLM output"""
@@ -48,22 +54,44 @@ Original comment: "{comment}"
 
 Rephrased comment:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at understanding and clarifying the emotional meaning of comments. Rephrase to make emotional intent clear while preserving all information."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=150
-        )
-        
-        return response.choices[0].message.content.strip()
-        
-    except Exception as e:
-        print(f"Error rephrasing comment: {str(e)}")
-        return None
+    max_retries = getattr(config, 'MAX_RETRIES', 3)
+    retry_delay = getattr(config, 'RETRY_DELAY', 1.0)
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": "You are an expert at understanding and clarifying the emotional meaning of comments. Rephrase to make emotional intent clear while preserving all information."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=150
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except openai.RateLimitError as e:
+            logger.warning(f"Rate limit exceeded during rephrasing on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                time.sleep(wait_time)
+            else:
+                logger.error("Max retries exceeded for rephrasing")
+                return None
+                
+        except openai.APIError as e:
+            logger.error(f"API error during rephrasing on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error rephrasing comment: {e}")
+            return None
+    
+    return None
 
 def get_rephrase_respond_prediction_all_emotions(text: str,
                                                subreddit: str,
@@ -85,7 +113,7 @@ def get_rephrase_respond_prediction_all_emotions(text: str,
     # Step 1: Rephrase the comment
     rephrased = rephrase_comment(text, client)
     if rephrased is None:
-        print(f"Failed to rephrase comment, using original")
+        logger.warning("Failed to rephrase comment, using original")
         rephrased = text
     
     # Step 2: Classify using both original and rephrased versions
@@ -109,26 +137,60 @@ Response as Python list: ['emotion1', 'emotion2']
 
 Response:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Consider both the original and rephrased versions to make accurate classifications. Be selective."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=100
-        )
-        
-        result = response.choices[0].message.content.strip()
-        predicted_emotions = parse_emotion_response(result, emotions)
-        
-        # Fallback to neutral if no emotions found
-        if not predicted_emotions:
-            predicted_emotions = ['neutral']
+    max_retries = getattr(config, 'MAX_RETRIES', 3)
+    retry_delay = getattr(config, 'RETRY_DELAY', 1.0)
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing emotions in text. Consider both the original and rephrased versions to make accurate classifications. Be selective."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.0),
+                max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 100)
+            )
             
-        return predicted_emotions
-        
-    except Exception as e:
-        print(f"Error getting rephrase-respond prediction: {str(e)}")
-        return ['neutral']
+            result = response.choices[0].message.content.strip()
+            predicted_emotions = parse_emotion_response(result, emotions)
+            
+            # Fallback to neutral if no emotions found
+            if not predicted_emotions:
+                predicted_emotions = ['neutral']
+                
+            return predicted_emotions
+            
+        except openai.RateLimitError as e:
+            logger.warning(f"Rate limit exceeded on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                logger.info(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                logger.error("Max retries exceeded for rate limit")
+                return ['neutral']
+                
+        except openai.APIError as e:
+            logger.error(f"OpenAI API error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("Max retries exceeded for API error")
+                return ['neutral']
+                
+        except openai.APIConnectionError as e:
+            logger.error(f"Connection error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("Max retries exceeded for connection error")
+                return ['neutral']
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in rephrase-respond prediction: {e}")
+            return ['neutral']
+    
+    # If we get here, all retries failed
+    logger.error("All retry attempts failed for rephrase-respond prediction")
+    return ['neutral']

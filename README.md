@@ -10,6 +10,13 @@ The project classifies Reddit comments into 28 fine-grained emotion categories:
 - **Cognitive emotions**: confusion, curiosity, realization, surprise
 - **Ambiguous emotions**: desire, neutral
 
+### Multi-Label Classification Approach
+The system uses multi-label classification where:
+- **Human experts** provide binary labels (1/0) for each of the 28 emotions
+- **AI models** predict emotion lists for each comment
+- **Fair comparison** between human and AI emotion sets
+- **Multiple emotions** per comment are supported (e.g., joy + excitement + optimism)
+
 ## Prompting Techniques Evaluated
 
 1. **Zero-shot**: Direct classification using emotion definitions
@@ -39,9 +46,9 @@ goemotions_evaluation/
 │   ├── self_consistency.py    
 │   └── take_a_step_back.py    
 ├── utils/
-│   ├── data_loader.py         
+│   ├── data_loader.py       
 │   ├── emotion_rubric.py     
-│   └── metrics.py             
+│   └── metrics.py            
 ├── evaluation/
 │   ├── evaluate_zero_shot.py
 │   ├── evaluate_cot.py
@@ -62,8 +69,8 @@ goemotions_evaluation/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/khatriv1/goemotions-evaluation.git
-cd goemotions-evaluation
+git clone https://github.com/khatriv1/go_emotion_evaluation.git
+cd go_emotion_evaluation
 ```
 
 2. Create and activate a virtual environment:
@@ -92,7 +99,7 @@ python main.py
 ```
 
 You'll be prompted to:
-1. Enter number of comments to evaluate (recommended: 50-100 for testing)
+1. Enter number of comments to evaluate (recommended: 10-50 for testing)
 2. Select which techniques to evaluate or run all
 
 ### Run Individual Technique
@@ -109,7 +116,7 @@ The GoEmotions dataset contains Reddit comments with expert emotion annotations.
 
 ## Multi-Label Classification
 
-Unlike single-label classification, GoEmotions allows multiple emotions per comment:
+The GoEmotions dataset allows multiple emotions per comment:
 - A comment can express joy + excitement + admiration simultaneously
 - Evaluation requires exact matching of emotion sets
 - Specialized metrics account for partial matches
@@ -129,7 +136,7 @@ The project uses 6 key metrics for multi-label evaluation:
 
 Results are saved in timestamped directories containing:
 - `goemotions_all_techniques_comparison.csv` - Overall metrics comparison
-- `goemotions_all_techniques_comparison.png` - Visual comparison chart
+- `goemotions_metrics_comparison.png` - Visual comparison chart
 - `goemotions_all_detailed_results.csv` - All predictions
 - `goemotions_comprehensive_report.txt` - Detailed analysis
 - Individual technique results in subdirectories

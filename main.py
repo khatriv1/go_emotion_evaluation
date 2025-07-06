@@ -191,7 +191,7 @@ def run_evaluations(num_comments: int, selected_techniques: List[int], results_d
     return all_results
 
 def create_comprehensive_analysis(all_results: Dict, results_dir: str):
-    """Create clean comprehensive analysis like Bloom project"""
+    """Create clean comprehensive analysis like Bloom project - FIXED VERSION"""
     try:
         import matplotlib.pyplot as plt
         import seaborn as sns
@@ -221,30 +221,30 @@ def create_comprehensive_analysis(all_results: Dict, results_dir: str):
         
         df = pd.DataFrame(comparison_data)
         
-        # CLEAN CHART DESIGN (like Bloom)
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12))
+        # FIXED CHART DESIGN (matching Bloom taxonomy style)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 14))
         
         # Set clean style
         plt.style.use('default')
         
-        # Chart 1: Clean 4-Metric Comparison (like Bloom)
+        # Chart 1: Clean 4-Metric Comparison (FIXED VERSION)
         x = np.arange(len(df))
         width = 0.2
         
-        # Use clean colors like Bloom chart
-        colors = ['#90EE90', '#87CEEB', '#DDA0DD', '#F08080']  # Light green, sky blue, plum, light coral
+        # Use same colors as Bloom chart
+        colors = ['#2ecc71', '#f39c12', '#3498db', '#9b59b6']  # Green, orange, blue, purple
         
-        # Create clean bars with proper spacing
+        # Create bars with proper spacing (FIXED)
         bars1 = ax1.bar(x - 1.5*width, df['Exact_Match_Accuracy'], width, 
                         label='Accuracy (%)', color=colors[0], alpha=0.8)
         bars2 = ax1.bar(x - 0.5*width, df['Cohens_Kappa']*100, width, 
-                        label="Cohen's κ", color=colors[1], alpha=0.8)
+                        label="Cohen's κ (*100)", color=colors[1], alpha=0.8)
         bars3 = ax1.bar(x + 0.5*width, df['Krippendorffs_Alpha']*100, width, 
-                        label="Krippendorff's α", color=colors[2], alpha=0.8)
+                        label="Krippendorff's α (*100)", color=colors[2], alpha=0.8)
         bars4 = ax1.bar(x + 1.5*width, df['ICC']*100, width, 
-                        label='ICC', color=colors[3], alpha=0.8)
+                        label='ICC (*100)', color=colors[3], alpha=0.8)
         
-        # Clean formatting
+        # FIXED: Clean formatting without overlapping labels
         ax1.set_xlabel('Prompting Technique', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Score (%)', fontsize=12, fontweight='bold')
         ax1.set_title('GoEmotions Multi-Label Emotion Classification: 4 Metrics Comparison', 
@@ -252,32 +252,41 @@ def create_comprehensive_analysis(all_results: Dict, results_dir: str):
         ax1.set_xticks(x)
         ax1.set_xticklabels(df['Technique'], rotation=45, ha='right', fontsize=10)
         ax1.legend(fontsize=10, loc='upper right')
-        ax1.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
-        ax1.set_ylim(0, 105)
+        ax1.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+        ax1.set_ylim(0, max(100, df['Exact_Match_Accuracy'].max() * 1.1))
         
-        # Add clean value labels (only on top of bars)
+        # FIXED: Clean value labels (no overlapping)
         for i, technique in enumerate(df['Technique']):
+            # Only show labels on top of bars, with proper formatting
+            
             # Accuracy
             height1 = df.iloc[i]['Exact_Match_Accuracy']
-            ax1.text(i - 1.5*width, height1 + 1, f'{height1:.1f}', 
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+            if height1 > 1:  # Only show if meaningful
+                ax1.text(i - 1.5*width, height1 + 2, f'{height1:.1f}', 
+                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             
-            # Kappa
+            # Kappa (scaled)
             height2 = df.iloc[i]['Cohens_Kappa']*100
-            ax1.text(i - 0.5*width, height2 + 1, f'{df.iloc[i]["Cohens_Kappa"]:.3f}', 
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+            kappa_val = df.iloc[i]['Cohens_Kappa']
+            if kappa_val > 0.01:  # Only show if meaningful
+                ax1.text(i - 0.5*width, height2 + 2, f'{kappa_val:.2f}', 
+                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             
-            # Alpha  
+            # Alpha (scaled)
             height3 = df.iloc[i]['Krippendorffs_Alpha']*100
-            ax1.text(i + 0.5*width, height3 + 1, f'{df.iloc[i]["Krippendorffs_Alpha"]:.3f}', 
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+            alpha_val = df.iloc[i]['Krippendorffs_Alpha']
+            if alpha_val > 0.01:  # Only show if meaningful
+                ax1.text(i + 0.5*width, height3 + 2, f'{alpha_val:.2f}', 
+                        ha='center', va='bottom', fontsize=8, fontweight='bold')
             
-            # ICC
+            # ICC (scaled)
             height4 = df.iloc[i]['ICC']*100
-            ax1.text(i + 1.5*width, height4 + 1, f'{df.iloc[i]["ICC"]:.3f}', 
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+            icc_val = df.iloc[i]['ICC']
+            if icc_val > 0.01:  # Only show if meaningful
+                ax1.text(i + 1.5*width, height4 + 2, f'{icc_val:.2f}', 
+                        ha='center', va='bottom', fontsize=8, fontweight='bold')
         
-        # Chart 2: Clean Ranking by Kappa (like Bloom)
+        # Chart 2: Clean Ranking by Kappa (FIXED VERSION)
         sorted_df = df.sort_values('Cohens_Kappa', ascending=True)
         
         # Create gradient colors (like Bloom)
@@ -285,9 +294,10 @@ def create_comprehensive_analysis(all_results: Dict, results_dir: str):
         
         # Highlight best performer in green
         colors_final = []
+        max_kappa = sorted_df['Cohens_Kappa'].max()
         for i, kappa in enumerate(sorted_df['Cohens_Kappa']):
-            if kappa == sorted_df['Cohens_Kappa'].max():
-                colors_final.append('#90EE90')  # Green for best
+            if abs(kappa - max_kappa) < 0.001:  # Handle floating point comparison
+                colors_final.append('#2ecc71')  # Green for best
             else:
                 colors_final.append(colors_gradient[i])
         
@@ -298,23 +308,32 @@ def create_comprehensive_analysis(all_results: Dict, results_dir: str):
         ax2.set_title("Techniques Ranked by Agreement (Cohen's κ)", 
                      fontsize=14, fontweight='bold', pad=20)
         ax2.grid(True, alpha=0.3, axis='x')
-        ax2.set_xlim(0, max(sorted_df['Cohens_Kappa']) * 1.1)
+        ax2.set_xlim(0, max(0.5, sorted_df['Cohens_Kappa'].max() * 1.15))
         
-        # Add clean value labels
+        # FIXED: Clean value labels (no overlapping)
         for bar, kappa in zip(bars, sorted_df['Cohens_Kappa']):
-            ax2.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2, 
-                    f'{kappa:.3f}', ha='left', va='center', fontweight='bold', fontsize=10)
+            if kappa > 0.01:  # Only show meaningful values
+                ax2.text(bar.get_width() + 0.005, bar.get_y() + bar.get_height()/2, 
+                        f'{kappa:.3f}', ha='left', va='center', fontweight='bold', fontsize=10)
         
         # Clean layout
         plt.tight_layout()
-        plt.subplots_adjust(hspace=0.3)
+        plt.subplots_adjust(hspace=0.4)  # More space between subplots
         
         # Save with high quality
         chart_path = os.path.join(results_dir, 'goemotions_metrics_comparison.png')
         plt.savefig(chart_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
         
-        # Create comprehensive report (same as before)
+        print("✓ Clean metrics comparison chart created")
+        print(f"📊 Chart saved to: {chart_path}")
+        
+        # Also create CSV with clean formatting
+        csv_path = os.path.join(results_dir, 'goemotions_all_techniques_comparison.csv')
+        df_clean = df.round(3)
+        df_clean.to_csv(csv_path, index=False)
+        
+        # Create comprehensive report (same as before but cleaner)
         report_path = os.path.join(results_dir, 'goemotions_comprehensive_report.txt')
         with open(report_path, 'w') as f:
             f.write("=== GoEmotions Multi-Label Emotion Classification: Comprehensive Evaluation Report ===\n\n")
@@ -351,16 +370,11 @@ def create_comprehensive_analysis(all_results: Dict, results_dir: str):
                 f.write(f"Krippendorff's Alpha (α): {best_alpha['Technique']} ({best_alpha['Krippendorffs_Alpha']:.3f})\n")
                 f.write(f"Intraclass Correlation (ICC): {best_icc['Technique']} ({best_icc['ICC']:.3f})\n")
         
-        # Save clean CSV
-        csv_path = os.path.join(results_dir, 'goemotions_all_techniques_comparison.csv')
-        df.round(3).to_csv(csv_path, index=False)
-        
-        print("✓ Clean metrics comparison chart created")
         print("✓ Comprehensive report created") 
         print("✓ CSV file created")
-        print(f"\n🎉 CLEAN ANALYSIS COMPLETE!")
+        print(f"\n🎉 FIXED ANALYSIS COMPLETE!")
         print(f"📊 Files created in {results_dir}:")
-        print("  📈 goemotions_metrics_comparison.png (CLEAN VERSION)")
+        print("  📈 goemotions_metrics_comparison.png (FIXED - NO OVERLAPPING LABELS)")
         print("  📋 goemotions_comprehensive_report.txt")
         print("  📊 goemotions_all_techniques_comparison.csv")
         

@@ -3,7 +3,13 @@
 import time
 import re
 import ast
+import logging
 from typing import List, Optional
+import config
+import openai
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
     """Parse emotion response from LLM output"""
@@ -74,26 +80,60 @@ Final answer as Python list: ['emotion1', 'emotion2']
 
 Response:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo-0125",
-            messages=[
-                {"role": "system", "content": "You are an expert at analyzing emotions in text. Think step by step and be selective. Only choose emotions that are clearly expressed."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=200
-        )
+    max_retries = getattr(config, 'MAX_RETRIES', 3)
+    retry_delay = getattr(config, 'RETRY_DELAY', 1.0)
+    
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo-0125",
+                messages=[
+                    {"role": "system", "content": "You are an expert at analyzing emotions in text. Think step by step and be selective. Only choose emotions that are clearly expressed."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=getattr(config, 'OPENAI_TEMPERATURE', 0.0),
+                max_tokens=getattr(config, 'OPENAI_MAX_TOKENS', 200)
+            )
 
-        result = response.choices[0].message.content.strip()
-        predicted_emotions = parse_emotion_response(result, emotions)
-        
-        # Fallback to neutral if no emotions found
-        if not predicted_emotions:
-            predicted_emotions = ['neutral']
+            result = response.choices[0].message.content.strip()
+            predicted_emotions = parse_emotion_response(result, emotions)
             
-        return predicted_emotions
+            # Fallback to neutral if no emotions found
+            if not predicted_emotions:
+                predicted_emotions = ['neutral']
+                
+            return predicted_emotions
 
-    except Exception as e:
-        print(f"Error getting CoT prediction: {e}")
-        return ['neutral']
+        except openai.RateLimitError as e:
+            logger.warning(f"Rate limit exceeded on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                logger.info(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                logger.error("Max retries exceeded for rate limit")
+                return ['neutral']
+                
+        except openai.APIError as e:
+            logger.error(f"OpenAI API error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("Max retries exceeded for API error")
+                return ['neutral']
+                
+        except openai.APIConnectionError as e:
+            logger.error(f"Connection error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("Max retries exceeded for connection error")
+                return ['neutral']
+                
+        except Exception as e:
+            logger.error(f"Unexpected error in CoT prediction: {e}")
+            return ['neutral']
+    
+    # If we get here, all retries failed
+    logger.error("All retry attempts failed for CoT prediction")
+    return ['neutral']
