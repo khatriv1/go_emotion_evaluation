@@ -17,10 +17,9 @@ import logging
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
-# Keep only your application logs
+
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-# Import the existing evaluation functions that your files expect
 try:
     from evaluation.evaluate_zero_shot import evaluate_zero_shot
     from evaluation.evaluate_cot import evaluate_cot
@@ -465,10 +464,10 @@ def main():
     print_header()
     
     # Check configuration
-    if config.OPENAI_API_KEY == "your-api-key-here" or not config.OPENAI_API_KEY:
+    if config.OPENAI_API_KEY == "api-key-here" or not config.OPENAI_API_KEY:
         print("ERROR: OpenAI API key not configured!")
         print("Please set your API key:")
-        print("export OPENAI_API_KEY='your-actual-api-key-here'")
+        print("export OPENAI_API_KEY='actual-api-key-here'")
         print("Or update config.py with your API key")
         sys.exit(1)
     

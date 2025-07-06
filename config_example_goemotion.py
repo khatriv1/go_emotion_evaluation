@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 # API Configuration - NEVER commit real API keys to GitHub
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-api-key-here")  # Set as environment variable
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "openai-api-key-here")  # Set as environment variable
 OPENAI_MODEL = "gpt-3.5-turbo"
 OPENAI_MAX_TOKENS = 1000
 OPENAI_TEMPERATURE = 0.0  # Deterministic for evaluation
@@ -72,7 +72,7 @@ MIN_COMMENTS_FOR_EVALUATION = 10
 DEFAULT_SAMPLE_SIZE = 100
 RANDOM_SEED = 42
 
-# Processing Configuration - Added missing values for your prompting files
+# Processing Configuration - Added missing values for  prompting files
 BATCH_SIZE = 10
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # seconds

@@ -246,7 +246,7 @@ class GoEmotionsRubric:
     
     def get_prompt_descriptions(self) -> Dict[str, str]:
         """
-        Get prompt descriptions for all emotions - this is what your evaluation files need!
+        Get prompt descriptions for all emotions - this is what evaluation files need
         Returns a dictionary mapping emotion names to their prompt descriptions
         """
         prompt_descriptions = {}
