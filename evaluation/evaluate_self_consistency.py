@@ -14,7 +14,7 @@ from prompting.self_consistency import get_self_consistency_prediction_all_emoti
 from utils.data_loader import load_and_preprocess_goemotions_data, get_comment_emotions, filter_annotated_comments
 from utils.metrics import calculate_agreement_metrics, plot_emotion_performance, print_detailed_results
 
-def evaluate_self_consistency(data_path: str, api_key: str, output_dir: str = "results/self_consistency", limit: int = None):
+def evaluate_self_consistency(data_path: str, api_key: str, output_dir: str = "results/self_consistency", limit: int = None, n_samples: int = 5):
     """Evaluate Self-Consistency prompting technique on GoEmotions dataset."""
     
     # Create output directory
@@ -68,13 +68,12 @@ def evaluate_self_consistency(data_path: str, api_key: str, output_dir: str = "r
             human_labels[comment_id] = human_emotions
             
             # Get model predictions with Self-Consistency
-            # Note: Using fewer samples (3) for faster evaluation
             model_emotions = get_self_consistency_prediction_all_emotions(
                 text=row['text'],
                 subreddit=row.get('subreddit', ''),
                 author=row.get('author', ''),
                 client=client,
-                n_samples=3  # Reduced for efficiency
+                n_samples=n_samples
             )
             model_labels[comment_id] = model_emotions
             
@@ -106,34 +105,40 @@ def evaluate_self_consistency(data_path: str, api_key: str, output_dir: str = "r
     metrics = calculate_agreement_metrics(human_labels, model_labels, emotions)
     
     # Create visualization
-    plot_emotion_performance(
-        metrics, 
-        emotions, 
-        'Self-Consistency',
-        f"{output_dir}/self_consistency_performance.png"
-    )
+    try:
+        plot_emotion_performance(
+            metrics, 
+            emotions, 
+            f'Self-Consistency (n={n_samples})',
+            f"{output_dir}/self_consistency_performance.png"
+        )
+        print(f"Performance plot saved to {output_dir}/self_consistency_performance.png")
+    except Exception as e:
+        print(f"Could not create plot: {e}")
     
     # Print results
-    print_detailed_results(metrics, emotions, 'Self-Consistency')
+    print_detailed_results(metrics, emotions, f'Self-Consistency (n={n_samples})')
     
     # Save detailed results
     results_df = pd.DataFrame(detailed_results)
     results_df.to_csv(f"{output_dir}/detailed_results.csv", index=False)
-    print(f"\nDetailed results saved to {output_dir}/detailed_results.csv")
+    print(f"Detailed results saved to {output_dir}/detailed_results.csv")
     
     # Save metrics summary
     metrics_summary = {
-        'technique': 'Self-Consistency',
+        'technique': f'Self-Consistency (n={n_samples})',
         'exact_match_accuracy': metrics['accuracy'],
         'kappa': metrics['kappa'],
         'alpha': metrics['alpha'],
         'icc': metrics['icc'],
         'hamming_loss': metrics.get('hamming_loss', 0),
-        'subset_accuracy': metrics.get('subset_accuracy', 0)
+        'subset_accuracy': metrics.get('subset_accuracy', 0),
+        'n_samples': n_samples
     }
     
     summary_df = pd.DataFrame([metrics_summary])
     summary_df.to_csv(f"{output_dir}/metrics_summary.csv", index=False)
+    print(f"Metrics summary saved to {output_dir}/metrics_summary.csv")
     
     return detailed_results, metrics
 
@@ -146,11 +151,13 @@ if __name__ == "__main__":
     try:
         print("\nStarting Self-Consistency evaluation on GoEmotions dataset...")
         print(f"Using data file: {config.DATA_PATH}")
+        print(f"Using model: {config.MODEL_ID}")
         
         results, metrics = evaluate_self_consistency(
             data_path=config.DATA_PATH,
             api_key=config.OPENAI_API_KEY,
-            limit=10  # Set to small number for testing
+            limit=None,  # Set to None for full evaluation or a number for testing
+            n_samples=5  # Number of samples for self-consistency
         )
         print("\nEvaluation completed successfully!")
         

@@ -53,16 +53,38 @@ def print_header():
     print(f"Using GoEmotions dataset: {config.DATA_PATH}")
     print()
 
+# def get_user_inputs() -> Tuple[int, List[int]]:
+#     """Get user inputs for evaluation parameters"""
+    
+#     # Get number of comments to evaluate
+#     while True:
+#         try:
+#             num_input = input("Enter number of comments to evaluate (recommended: 10-50 for testing, press Enter for 10): ").strip()
+#             if num_input == "":
+#                 num_comments = 10
+#                 print(f"Using default sample size of {num_comments} comments")
+#                 break
+#             else:
+#                 num_comments = int(num_input)
+#                 if num_comments < 5:
+#                     print("Warning: Less than 5 comments may not provide reliable results.")
+#                     confirm = input("Continue anyway? (y/n): ").strip().lower()
+#                     if confirm != 'y':
+#                         continue
+#                 break
+#         except ValueError:
+#             print("Please enter a valid number or press Enter for default (10 comments).")
+
 def get_user_inputs() -> Tuple[int, List[int]]:
     """Get user inputs for evaluation parameters"""
     
     # Get number of comments to evaluate
     while True:
         try:
-            num_input = input("Enter number of comments to evaluate (recommended: 10-50 for testing, press Enter for 10): ").strip()
+            num_input = input("Enter number of comments to evaluate (press Enter for FULL dataset, or specify a number): ").strip()
             if num_input == "":
-                num_comments = 10
-                print(f"Using default sample size of {num_comments} comments")
+                num_comments = None  # None means use full dataset
+                print(f"Using FULL dataset (all available samples)")
                 break
             else:
                 num_comments = int(num_input)
@@ -73,7 +95,7 @@ def get_user_inputs() -> Tuple[int, List[int]]:
                         continue
                 break
         except ValueError:
-            print("Please enter a valid number or press Enter for default (10 comments).")
+            print("Please enter a valid number or press Enter for full dataset.")
     
     # Get techniques to evaluate
     print("\nAvailable prompting techniques:")

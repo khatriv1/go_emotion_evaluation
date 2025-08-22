@@ -1,26 +1,23 @@
 # goemotions_evaluation/prompting/zero_shot.py
-
 """
 Zero-shot prompting for GoEmotions emotion classification.
-FIXED: Now uses multi-label approach instead of 28 binary questions
+FIXED: Consistent with Bloom's structure
 """
 
 import time
 import logging
-from typing import List, Optional
+from typing import List
 import re
 import ast
 import config
 import openai
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
     """Parse emotion response from LLM output"""
     response_text = response_text.strip()
     
-    # Try to parse as Python list first
     try:
         # Look for list pattern like ['emotion1', 'emotion2']
         list_match = re.search(r'\[([^\]]+)\]', response_text)
@@ -42,7 +39,7 @@ def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> Lis
         if emotion.lower() in response_lower:
             found_emotions.append(emotion)
     
-    return found_emotions
+    return found_emotions if found_emotions else ['neutral']
 
 def get_zero_shot_prediction_all_emotions(text: str,
                                         subreddit: str, 
@@ -87,7 +84,7 @@ Response:"""
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo-0125",
+                model=config.MODEL_ID,
                 messages=[
                     {"role": "system", "content": "You are an expert at analyzing emotions in text. Be selective and only choose emotions that are clearly expressed. Respond with a Python list."},
                     {"role": "user", "content": prompt}

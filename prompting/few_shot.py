@@ -1,5 +1,4 @@
 # goemotions_evaluation/prompting/few_shot.py
-
 """
 Few-shot prompting for GoEmotions emotion classification.
 FIXED: Multi-label approach with focused examples
@@ -42,7 +41,7 @@ def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> Lis
         if emotion.lower() in response_lower:
             found_emotions.append(emotion)
     
-    return found_emotions
+    return found_emotions if found_emotions else ['neutral']
 
 def get_few_shot_examples() -> str:
     """Get few-shot examples for emotion classification"""
@@ -116,7 +115,7 @@ Response:"""
     for attempt in range(max_retries):
         try:
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo-0125",
+                model=config.MODEL_ID,
                 messages=[
                     {"role": "system", "content": "You are an expert at analyzing emotions in text. Follow the examples provided and be selective. Only choose emotions that are clearly expressed."},
                     {"role": "user", "content": prompt}

@@ -104,12 +104,16 @@ def evaluate_few_shot(data_path: str, api_key: str, output_dir: str = "results/f
     metrics = calculate_agreement_metrics(human_labels, model_labels, emotions)
     
     # Create visualization
-    plot_emotion_performance(
-        metrics, 
-        emotions, 
-        'Few-shot',
-        f"{output_dir}/few_shot_performance.png"
-    )
+    try:
+        plot_emotion_performance(
+            metrics, 
+            emotions, 
+            'Few-shot',
+            f"{output_dir}/few_shot_performance.png"
+        )
+        print(f"Performance plot saved to {output_dir}/few_shot_performance.png")
+    except Exception as e:
+        print(f"Could not create plot: {e}")
     
     # Print results
     print_detailed_results(metrics, emotions, 'Few-shot')
@@ -117,7 +121,7 @@ def evaluate_few_shot(data_path: str, api_key: str, output_dir: str = "results/f
     # Save detailed results
     results_df = pd.DataFrame(detailed_results)
     results_df.to_csv(f"{output_dir}/detailed_results.csv", index=False)
-    print(f"\nDetailed results saved to {output_dir}/detailed_results.csv")
+    print(f"Detailed results saved to {output_dir}/detailed_results.csv")
     
     # Save metrics summary
     metrics_summary = {
@@ -132,6 +136,7 @@ def evaluate_few_shot(data_path: str, api_key: str, output_dir: str = "results/f
     
     summary_df = pd.DataFrame([metrics_summary])
     summary_df.to_csv(f"{output_dir}/metrics_summary.csv", index=False)
+    print(f"Metrics summary saved to {output_dir}/metrics_summary.csv")
     
     return detailed_results, metrics
 
@@ -144,11 +149,12 @@ if __name__ == "__main__":
     try:
         print("\nStarting Few-shot evaluation on GoEmotions dataset...")
         print(f"Using data file: {config.DATA_PATH}")
+        print(f"Using model: {config.MODEL_ID}")
         
         results, metrics = evaluate_few_shot(
             data_path=config.DATA_PATH,
             api_key=config.OPENAI_API_KEY,
-            limit=10  # Set to small number for testing
+            limit=None  # Set to None for full evaluation or a number for testing
         )
         print("\nEvaluation completed successfully!")
         
