@@ -1,7 +1,9 @@
 # goemotions_evaluation/prompting/active_prompt.py
 """
-Active Prompting for GoEmotions emotion classification.
-FIXED: 12 examples total (2 per main emotion) WITHOUT self-consistency
+Active Prompting for GoEmotions
+- Generates 56 candidates (2 per emotion × 28 emotions)
+- Selects TOP 12 examples with highest uncertainty/wrong scores
+- Uses selected 12 as few-shot examples
 """
 
 import os
@@ -20,11 +22,22 @@ from pathlib import Path
 # Set up logging
 logger = logging.getLogger(__name__)
 
+# All 28 emotions
+ALL_EMOTIONS = [
+    'admiration', 'amusement', 'anger', 'annoyance', 'approval',
+    'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
+    'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
+    'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
+    'pride', 'realization', 'relief', 'remorse', 'sadness',
+    'surprise', 'neutral'
+]
+
 def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> List[str]:
     """Parse emotion response from LLM output"""
     response_text = response_text.strip()
     
     try:
+        # Try to find Python list format
         list_match = re.search(r'\[([^\]]+)\]', response_text)
         if list_match:
             list_str = '[' + list_match.group(1) + ']'
@@ -35,6 +48,7 @@ def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> Lis
     except:
         pass
     
+    # Fallback: search for emotion words
     found_emotions = []
     response_lower = response_text.lower()
     
@@ -45,222 +59,353 @@ def parse_emotion_response(response_text: str, valid_emotions: List[str]) -> Lis
     return found_emotions if found_emotions else ['neutral']
 
 class ActivePromptSelector:
-    """Implements Active Prompting methodology with uncertainty + wrong selection"""
+    """Generate and select high-quality examples for Active Prompting"""
     
-    def __init__(self, pool_size: int = 20, k_samples: int = 5):
-        self.pool_size = pool_size
+    def __init__(self, k_samples: int = 5):
         self.k_samples = k_samples
     
-    def estimate_uncertainty_and_wrong(self, texts: List[str], client, emotion: str, 
-                                      ground_truth_df: pd.DataFrame) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """Estimate uncertainty AND wrongness for a SPECIFIC emotion"""
-        print(f"Estimating uncertainty and wrongness for emotion: {emotion}")
+    def calculate_uncertainty_for_emotion(
+        self, 
+        text: str, 
+        emotion: str, 
+        client,
+        n_samples: int = 5
+    ) -> float:
+        """Calculate uncertainty for a specific emotion prediction"""
         
-        uncertainty_scores = {}
-        wrong_scores = {}
-        
-        for i, text in enumerate(texts):
-            if (i + 1) % 5 == 0:
-                print(f"Processing text {i + 1}/{len(texts)}")
-            
-            predictions = []
-            for sample_idx in range(self.k_samples):
-                pred = self._get_single_prediction(text, client, emotion)
-                if pred is not None:
-                    predictions.append(pred)
-                time.sleep(0.05)
-            
-            if predictions:
-                # Calculate uncertainty (disagreement)
-                unique_predictions = len(set(predictions))
-                uncertainty = unique_predictions / len(predictions)
-                uncertainty_scores[text] = uncertainty
-                
-                # Get ground truth
-                ground_truth = self._get_ground_truth(text, emotion, ground_truth_df)
-                
-                # Calculate wrongness (error rate)
-                wrong_rate = sum(1 for p in predictions if emotion in p != ground_truth) / len(predictions)
-                wrong_scores[text] = wrong_rate
-            else:
-                uncertainty_scores[text] = 0.0
-                wrong_scores[text] = 0.0
-        
-        return uncertainty_scores, wrong_scores
-    
-    def _get_single_prediction(self, text: str, client, emotion: str) -> Optional[List[str]]:
-        """Get a single emotion prediction"""
-        prompt = f"""Does this text express {emotion.upper()} emotion?
-
+        predictions = []
+        for _ in range(n_samples):
+            prompt = f"""Does this text express {emotion}?
 Text: "{text[:200]}"
 
-Answer with a Python list of emotions present.
+Answer with Python list of emotions. Include '{emotion}' if present."""
 
-Answer:"""
+            try:
+                import config
+                response = client.chat.completions.create(
+                    model=config.MODEL_ID,
+                    messages=[
+                        {"role": "system", "content": "You are an emotion detector. Be precise."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.8,
+                    max_tokens=30,
+                    timeout=8
+                )
+                
+                result = parse_emotion_response(response.choices[0].message.content, ALL_EMOTIONS)
+                predictions.append(emotion in result)
+                
+            except Exception as e:
+                print(f"Error in prediction: {e}")
+                predictions.append(False)
+            
+            time.sleep(0.05)
+        
+        # Calculate uncertainty (entropy-based)
+        if predictions:
+            pos_rate = sum(predictions) / len(predictions)
+            # Maximum uncertainty when pos_rate = 0.5
+            if pos_rate == 0 or pos_rate == 1:
+                uncertainty = 0.0
+            else:
+                uncertainty = -pos_rate * np.log(pos_rate) - (1-pos_rate) * np.log(1-pos_rate)
+        else:
+            uncertainty = 0.0
+        
+        return uncertainty
+    
+    def calculate_wrongness_for_emotion(
+        self,
+        text: str,
+        emotion: str,
+        ground_truth: bool,
+        client,
+        n_samples: int = 5
+    ) -> float:
+        """Calculate wrongness rate for a specific emotion"""
+        
+        wrong_count = 0
+        for _ in range(n_samples):
+            prompt = f"""Does this text express {emotion}?
+Text: "{text[:200]}"
 
-        try:
-            import config
-            response = client.chat.completions.create(
-                model=config.MODEL_ID,
-                messages=[
-                    {"role": "system", "content": f"You are an expert at detecting emotions. Be precise."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.8,
-                max_tokens=20,
-                timeout=8
+Answer with Python list of emotions."""
+
+            try:
+                import config
+                response = client.chat.completions.create(
+                    model=config.MODEL_ID,
+                    messages=[
+                        {"role": "system", "content": "You are an emotion detector."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=30,
+                    timeout=8
+                )
+                
+                result = parse_emotion_response(response.choices[0].message.content, ALL_EMOTIONS)
+                prediction = emotion in result
+                
+                if prediction != ground_truth:
+                    wrong_count += 1
+                    
+            except Exception as e:
+                print(f"Error: {e}")
+                wrong_count += 1
+            
+            time.sleep(0.05)
+        
+        return wrong_count / n_samples if n_samples > 0 else 0.0
+
+def prepare_active_prompting_data(
+    df: pd.DataFrame, 
+    client, 
+    n_examples: int = 12
+) -> List[Tuple[str, List[str], str]]:
+    """
+    Enhanced Active Prompting:
+    1. Generate 56 candidates (2 per emotion)
+    2. Select TOP 12 with highest scores
+    """
+    print("\n" + "="*60)
+    print("ACTIVE PROMPTING: 56 Candidates → Top 12 Selection")
+    print("="*60)
+    
+    selector = ActivePromptSelector(k_samples=5)
+    all_candidates = []
+    used_texts = set()
+    
+    # Ensure we have enough data
+    pool_size = min(len(df), 90)
+    pool_df = df.head(pool_size)
+    print(f"Using pool of {pool_size} samples")
+    
+    # PHASE 1: Generate candidates for each emotion
+    print("\n📊 PHASE 1: Generating 56 candidates (2 per emotion)...")
+    
+    for emotion_idx, emotion in enumerate(ALL_EMOTIONS, 1):
+        print(f"\n[{emotion_idx}/28] Processing: {emotion}")
+        
+        emotion_candidates = []
+        
+        # Calculate scores for all texts for this emotion
+        for idx, row in pool_df.iterrows():
+            text = row['text']
+            
+            # Skip if already used
+            if text in used_texts:
+                continue
+            
+            # Get ground truth for this emotion
+            ground_truth = False
+            if emotion in row.index:
+                try:
+                    value = row[emotion]
+                    ground_truth = pd.notna(value) and int(value) == 1
+                except:
+                    pass
+            
+            # Calculate uncertainty
+            uncertainty = selector.calculate_uncertainty_for_emotion(
+                text, emotion, client, n_samples=5
             )
             
-            result = response.choices[0].message.content.strip()
-            # Simple parsing
-            if emotion.lower() in result.lower():
-                return [emotion]
-            return []
-            
-        except Exception as e:
-            pass
-            
-        return None
-    
-    def _get_ground_truth(self, text: str, emotion: str, df: pd.DataFrame) -> bool:
-        """Get ground truth for a text and emotion"""
-        matching_rows = df[df['text'] == text]
-        
-        if not matching_rows.empty:
-            row = matching_rows.iloc[0]
-            if emotion in row and row[emotion] == 1:
-                return True
-        return False
-    
-    def select_top_uncertain_and_wrong(self, uncertainty_scores: Dict[str, float], 
-                                      wrong_scores: Dict[str, float]) -> Tuple[str, str]:
-        """Select top 1 uncertain and top 1 wrong text"""
-        top_uncertain = max(uncertainty_scores.items(), key=lambda x: x[1])[0] if uncertainty_scores else None
-        top_wrong = max(wrong_scores.items(), key=lambda x: x[1])[0] if wrong_scores else None
-        
-        print(f"  Top uncertain: {top_uncertain[:60] if top_uncertain else 'None'}...")
-        print(f"  Top wrong: {top_wrong[:60] if top_wrong else 'None'}...")
-        
-        return top_uncertain, top_wrong
-
-def prepare_active_prompting_data(df: pd.DataFrame, client, n_examples: int = 12) -> List[Tuple[str, List[str], str]]:
-    """Prepare 12 active prompting examples (2 per main emotion)"""
-    print("Preparing Active Prompting data (12 EXAMPLES VERSION)...")
-    
-    main_emotions = ['joy', 'sadness', 'anger', 'fear', 'surprise', 'neutral']
-    all_examples = []  # Will contain 12 examples total
-    
-    # Get 20 sample texts
-    selector = ActivePromptSelector(pool_size=20, k_samples=5)
-    sample_df = df.sample(n=min(len(df), 20), random_state=42)
-    sample_texts = sample_df['text'].tolist()
-    
-    # Find uncertain and wrong examples for EACH EMOTION
-    for emotion in main_emotions:
-        print(f"\nProcessing emotion: {emotion}")
-        
-        try:
-            # Get uncertainty and wrong scores
-            uncertainty_scores, wrong_scores = selector.estimate_uncertainty_and_wrong(
-                sample_texts, client, emotion, sample_df
+            # Calculate wrongness
+            wrongness = selector.calculate_wrongness_for_emotion(
+                text, emotion, ground_truth, client, n_samples=5
             )
             
-            # Select top 1 uncertain and top 1 wrong
-            top_uncertain, top_wrong = selector.select_top_uncertain_and_wrong(
-                uncertainty_scores, wrong_scores
-            )
+            # Get all true emotions for this text
+            true_emotions = []
+            for em in ALL_EMOTIONS:
+                if em in row.index:
+                    try:
+                        if pd.notna(row[em]) and int(row[em]) == 1:
+                            true_emotions.append(em)
+                    except:
+                        pass
             
-            # Add uncertain example
-            if top_uncertain:
-                matching_rows = sample_df[sample_df['text'] == top_uncertain]
-                if not matching_rows.empty:
-                    row = matching_rows.iloc[0]
-                    true_emotions = [e for e in main_emotions if e in row and row[e] == 1]
-                    if not true_emotions:
-                        true_emotions = ['neutral']
-                    reasoning = f"This text expresses {', '.join(true_emotions)}."
-                    all_examples.append((top_uncertain, true_emotions, reasoning))
+            if not true_emotions:
+                true_emotions = ['neutral']
             
-            # Add wrong example (if different from uncertain)
-            if top_wrong and top_wrong != top_uncertain:
-                matching_rows = sample_df[sample_df['text'] == top_wrong]
-                if not matching_rows.empty:
-                    row = matching_rows.iloc[0]
-                    true_emotions = [e for e in main_emotions if e in row and row[e] == 1]
-                    if not true_emotions:
-                        true_emotions = ['neutral']
-                    reasoning = f"This text expresses {', '.join(true_emotions)}."
-                    all_examples.append((top_wrong, true_emotions, reasoning))
-            
-            print(f"✓ Selected examples for {emotion}")
-            
-        except Exception as e:
-            print(f"⚠ Error in {emotion}: {e}")
+            # Store candidate with scores
+            emotion_candidates.append({
+                'text': text,
+                'emotions': true_emotions,
+                'target_emotion': emotion,
+                'uncertainty': uncertainty,
+                'wrongness': wrongness,
+                'combined_score': uncertainty + wrongness,  # Combined metric
+                'ground_truth': ground_truth
+            })
+        
+        # Sort by scores and select top 2 for this emotion
+        emotion_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        # Take top uncertain example
+        if len(emotion_candidates) > 0:
+            best_uncertain = max(emotion_candidates, key=lambda x: x['uncertainty'])
+            if best_uncertain['text'] not in used_texts:
+                all_candidates.append(best_uncertain)
+                used_texts.add(best_uncertain['text'])
+                print(f"  ✓ Uncertain example: score={best_uncertain['uncertainty']:.3f}")
+        
+        # Take top wrong example (different from uncertain)
+        for candidate in sorted(emotion_candidates, key=lambda x: x['wrongness'], reverse=True):
+            if candidate['text'] not in used_texts:
+                all_candidates.append(candidate)
+                used_texts.add(candidate['text'])
+                print(f"  ✓ Wrong example: score={candidate['wrongness']:.3f}")
+                break
     
-    print(f"\n✓ Total examples collected: {len(all_examples)}")
-    return all_examples[:12]  # Ensure max 12 examples
+    print(f"\n📊 Total candidates generated: {len(all_candidates)}")
+    
+    # PHASE 2: Select TOP 12 examples from all candidates
+    print("\n📊 PHASE 2: Selecting TOP 12 examples...")
+    
+    # Sort all candidates by combined score
+    all_candidates.sort(key=lambda x: x['combined_score'], reverse=True)
+    
+    # Select top 12
+    selected_examples = []
+    emotions_covered = set()
+    
+    for candidate in all_candidates[:12]:
+        text = candidate['text']
+        emotions = candidate['emotions']
+        target = candidate['target_emotion']
+        score = candidate['combined_score']
+        
+        # Create reasoning
+        reasoning = f"This text expresses {', '.join(emotions)}."
+        if target in emotions:
+            reasoning += f" It clearly shows {target}."
+        else:
+            reasoning += f" It does not show {target}."
+        
+        selected_examples.append((text, emotions, reasoning))
+        emotions_covered.update(emotions)
+        
+        print(f"  Selected: {target} | Score: {score:.3f} | Emotions: {emotions}")
+    
+    print(f"\n✅ Selected 12 examples covering {len(emotions_covered)} unique emotions")
+    print(f"Emotions covered: {sorted(emotions_covered)}")
+    
+    # If we don't have exactly 12, add more from pool
+    while len(selected_examples) < 12:
+        for idx, row in pool_df.iterrows():
+            if row['text'] not in used_texts and len(selected_examples) < 12:
+                true_emotions = []
+                for em in ALL_EMOTIONS:
+                    if em in row.index:
+                        try:
+                            if pd.notna(row[em]) and int(row[em]) == 1:
+                                true_emotions.append(em)
+                        except:
+                            pass
+                
+                if not true_emotions:
+                    true_emotions = ['neutral']
+                
+                reasoning = f"This text expresses {', '.join(true_emotions)}."
+                selected_examples.append((row['text'], true_emotions, reasoning))
+                used_texts.add(row['text'])
+                print(f"  Added padding example: {true_emotions}")
+    
+    print(f"\n✅ Final: {len(selected_examples)} examples ready for few-shot prompting")
+    
+    return selected_examples[:12]
 
-def get_active_prompt_prediction_all_emotions(text: str, subreddit: str, author: str, client, 
-                                            uncertainty_examples: List[Tuple[str, List[str], str]] = None,
-                                            model=None,
-                                            use_self_consistency: bool = False,
-                                            consistency_samples: int = 5) -> List[str]:
-    """Get active prompt prediction WITHOUT self-consistency (like Bloom's)"""
+def get_active_prompt_prediction_all_emotions(
+    text: str, 
+    subreddit: str, 
+    author: str, 
+    client, 
+    uncertainty_examples: List[Tuple[str, List[str], str]] = None,
+    model=None,
+    use_self_consistency: bool = False,
+    consistency_samples: int = 5
+) -> List[str]:
+    """
+    Get prediction using Active Prompting with TOP 12 examples
+    """
     
-    main_emotions = ['joy', 'sadness', 'anger', 'fear', 'surprise', 'neutral']
-    all_emotions = [
-        'admiration', 'amusement', 'anger', 'annoyance', 'approval',
-        'caring', 'confusion', 'curiosity', 'desire', 'disappointment',
-        'disapproval', 'disgust', 'embarrassment', 'excitement', 'fear',
-        'gratitude', 'grief', 'joy', 'love', 'nervousness', 'optimism',
-        'pride', 'realization', 'relief', 'remorse', 'sadness',
-        'surprise', 'neutral'
-    ]
-    
-    # Build examples text from all 12 examples
+    # Build few-shot examples
     examples_text = ""
     if uncertainty_examples:
-        examples_text = "EXAMPLES from uncertain and wrong cases:\n"
-        for i, (ex_text, ex_emotions, ex_reasoning) in enumerate(uncertainty_examples[:12], 1):
+        examples_text = "Learn from these 12 high-uncertainty examples:\n\n"
+        
+        for i, (ex_text, ex_emotions, ex_reasoning) in enumerate(uncertainty_examples, 1):
             examples_text += f'Example {i}:\n'
             examples_text += f'Text: "{ex_text[:100]}..."\n'
-            examples_text += f'Emotions: {ex_emotions}\n\n'
+            examples_text += f'Emotions: {ex_emotions}\n'
+            examples_text += f'Reasoning: {ex_reasoning}\n\n'
     
-    prompt = f"""Classify this Reddit comment into emotions.
+    # Main prompt
+    prompt = f"""Classify the emotions in this Reddit comment.
 
-Available emotions: {', '.join(all_emotions)}
+Available emotions: {', '.join(ALL_EMOTIONS)}
 
 {examples_text}
 
-Now classify this text, please think step by step:
-Text: "{text[:150]}"
+Now classify this text. Think step by step:
+1. What is the overall tone?
+2. Which specific emotions are present?
+3. Can multiple emotions coexist?
+
+Text: "{text[:200]}"
 Subreddit: {subreddit}
 Author: {author}
 
-INSTRUCTIONS:
-1. Learn from the examples provided above
-2. Analyze the text carefully
-3. Look for emotional words and tone
-4. Most texts have 1-2 emotions maximum
-5. Be conservative - only select clear emotions
-6. If no clear emotion, choose 'neutral'
-
-Answer with Python list like ['joy'] or ['anger', 'sadness'] or ['neutral']:"""
+Answer with a Python list of emotions like ['joy'] or ['anger', 'sadness'] or ['neutral']:"""
 
     try:
         import config
-        response = client.chat.completions.create(
-            model=config.MODEL_ID if model is None else model,
-            messages=[
-                {"role": "system", "content": "You are an emotion classifier. Think step by step and be selective. Answer with a Python list of emotions."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0,
-            max_tokens=30,
-            timeout=10
-        )
         
-        predicted_emotions = parse_emotion_response(response.choices[0].message.content, all_emotions)
+        if use_self_consistency:
+            # Multiple samples for self-consistency
+            all_predictions = []
+            for _ in range(consistency_samples):
+                response = client.chat.completions.create(
+                    model=config.MODEL_ID if model is None else model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert emotion classifier. Use the examples to guide your analysis."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=100,
+                    timeout=10
+                )
+                
+                predicted = parse_emotion_response(response.choices[0].message.content, ALL_EMOTIONS)
+                all_predictions.append(predicted)
+            
+            # Majority voting
+            emotion_counts = Counter()
+            for pred in all_predictions:
+                for emotion in pred:
+                    emotion_counts[emotion] += 1
+            
+            # Select emotions that appear in majority
+            threshold = consistency_samples / 2
+            predicted_emotions = [em for em, count in emotion_counts.items() if count > threshold]
+            
+        else:
+            # Single prediction
+            response = client.chat.completions.create(
+                model=config.MODEL_ID if model is None else model,
+                messages=[
+                    {"role": "system", "content": "You are an expert emotion classifier. Use the examples carefully."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=100,
+                timeout=10
+            )
+            
+            predicted_emotions = parse_emotion_response(response.choices[0].message.content, ALL_EMOTIONS)
         
         if not predicted_emotions:
             predicted_emotions = ['neutral']
